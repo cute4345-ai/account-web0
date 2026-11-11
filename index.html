@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="個人帳戶登入入口，使用帳號與密碼登入個人帳戶。">
+  <meta name="theme-color" content="#dce5ef">
+  <meta name="color-scheme" content="light">
+  <title>個人帳戶登入｜個人帳戶</title>
+  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./account.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳至主要內容</a>
+  <header class="site-header">
+    <a class="site-name" href="#login" aria-label="個人帳戶首頁">個人帳戶</a>
+    <div class="header-light" aria-hidden="true"><span></span></div>
+  </header>
+  <main id="main-content" tabindex="-1">
+    <section class="login-panel" aria-labelledby="login-title">
+      <h1 id="login-title">個人帳戶登入</h1>
+      <form id="login-form">
+        <div class="field">
+          <label for="account">帳號</label>
+          <input id="account" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+        </div>
+        <div class="field">
+          <label for="password">密碼</label>
+          <div class="password-input">
+            <input id="password" name="password" type="password" autocomplete="current-password" placeholder="********" required>
+            <button class="password-toggle" type="button" aria-label="顯示密碼" aria-controls="password" aria-pressed="false"><img class="eye-icon" src="./assets/icons/eye.svg" alt="" aria-hidden="true" width="39" height="30"></button>
+          </div>
+        </div>
+        <button class="login-button" type="submit" disabled>登入</button>
+        <nav class="account-links" aria-label="帳戶協助">
+          <a href="#register">註冊</a>
+          <a href="#recovery">忘記密碼</a>
+        </nav>
+        <p id="form-message" class="form-message" role="status" aria-live="polite" hidden></p>
+      </form>
+    </section>
+  </main>
+  <div class="bottom-light bottom-light-left" aria-hidden="true"></div>
+  <div class="bottom-light bottom-light-right" aria-hidden="true"></div>
+  <aside class="demo-tools" aria-label="流程示範工具">
+    <details id="demo-tools">
+      <summary>流程示範 <span aria-hidden="true">· 27 畫面</span></summary>
+      <div class="demo-drawer">
+        <h2>個人帳戶 · 流程預覽</h2>
+        <p>僅使用虛構資料，未連接後端、金流或讀卡設備。請勿填入真實個資。重新整理會清除本次操作資料。</p>
+        <p class="demo-credentials">示範帳號：<b>demo</b>　密碼：<b>demo1234</b><br>安全問題答案：<b>小王子</b>　示範證號：<b>DEMO-ID-001</b></p>
+        <div class="demo-actions"><button type="button" data-action="demo-login">以示範帳戶進入</button><button type="button" data-action="demo-reset">重置示範</button></div>
+        <label for="preview-screen">直接預覽參考畫面</label>
+        <select id="preview-screen"><option value="">選擇畫面 01–27</option></select>
+      </div>
+    </details>
+  </aside>
+  <dialog id="flow-dialog" class="flow-dialog" aria-labelledby="dialog-title"></dialog>
+  <noscript><p class="no-script">此網站為流程示範；請啟用 JavaScript 操作，尚未串接正式帳戶服務。</p></noscript>
+</body>
+</html>
