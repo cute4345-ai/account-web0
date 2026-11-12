@@ -293,7 +293,7 @@ previewSelect.addEventListener('change',()=>{if(previewSelect.value){const n=pre
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){demoTools.open=false;if(menuOpen&&!dialog.open){menuOpen=false;document.querySelector('.sidebar')?.classList.remove('is-open');document.querySelector('.mobile-menu')?.setAttribute('aria-expanded','false');document.querySelector('.mobile-menu')?.focus();}}});
 window.addEventListener('hashchange',()=>render());
 // Appended to the original app.js at build time. Original visual components remain.
-const API_BASE='https://linux-shots-volunteer-requiring.trycloudflare.com/api/v1';
+const API_BASE='https://arlington-hunting-den-owned.trycloudflare.com/api/v1';
 let apiSession=null,apiTask=null,apiEpoch=0,apiPollTimer=null,apiBusy=false,apiNotice='';
 const originalRender=render,originalModal=renderModal,originalRegister=renderRegister;
 async function backend(path,{method='GET',body,login=false}={}){
