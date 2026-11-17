@@ -300,7 +300,7 @@ async function backend(path,{method='GET',body,login=false,raw=false,headers:ext
  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
  try{const headers={Accept:'application/json',...extraHeaders};if(body)headers['Content-Type']='application/json';if(login){if(!apiSession)throw Error('請先登入');headers.Authorization=`Bearer ${apiSession.accessToken}`;}
  const response=await fetch(API_BASE+path,{method,headers,body:body?JSON.stringify(body):undefined,signal:controller.signal,cache:'no-store',credentials:'omit',redirect:'error'});
- const result=await response.json().catch(()=>{throw Error('後端沒有回傳有效JSON');});if(!response.ok){const err=Error(result.error?.message||result.error?.code||`HTTP ${response.status}`);err.code=result.error?.code;err.status=response.status;throw err;}
+ if(response.status===204&&response.ok)return null;const result=await response.json().catch(()=>{throw Error('後端沒有回傳有效JSON');});if(!response.ok){const err=Error(result.error?.message||result.error?.code||`HTTP ${response.status}`);err.code=result.error?.code;err.status=response.status;throw err;}
  if(raw)return result;if(!Object.hasOwn(result,'data'))throw Error('後端回應缺少data欄位');return result.data;
  }catch(e){if(e.name==='AbortError'||e instanceof TypeError){const error=Error('連線中斷，結果尚未確認。請先核對後端結果，勿重複提交。');error.uncertain=true;throw error;}throw e;}finally{clearTimeout(timeout);}
 }
@@ -336,7 +336,7 @@ async function pollTask(epoch){if(epoch!==apiEpoch||!apiTask||!apiSession)return
  if(result.status!=='WAITING')throw Error('讀卡狀態不符');schedulePoll(epoch);
  }catch(e){if(epoch!==apiEpoch)return;apiMessage(e.message);if(e.uncertain){apiPollTimer=setTimeout(()=>pollTask(epoch),3000);return;}clearApiTask();dialog.querySelector('.question')?.remove();const refresh=document.createElement('button');refresh.type='button';refresh.className='btn';refresh.dataset.action='api-create-task';refresh.textContent='重新建立綁卡任務';dialog.append(refresh);}}
 document.addEventListener('submit',async e=>{
- const form=e.target;if(['merchant-form','payment-form'].includes(form.id)){e.preventDefault();e.stopImmediatePropagation();await handleBusinessSubmit(form);return;}if(!['login-form','register-form'].includes(form.id)){e.preventDefault();e.stopImmediatePropagation();return;}e.preventDefault();e.stopImmediatePropagation();if(apiBusy||!form.reportValidity())return;
+ const form=e.target;if(['account-password-form','record-date-form'].includes(form.id)){e.preventDefault();e.stopImmediatePropagation();await handleUserSubmit(form);return;}if(['recovery-form','answer-form','recovery-password-form'].includes(form.id)){e.preventDefault();e.stopImmediatePropagation();await handleRecoverySubmit(form);return;}if(['merchant-form','payment-form'].includes(form.id)){e.preventDefault();e.stopImmediatePropagation();await handleBusinessSubmit(form);return;}if(!['login-form','register-form'].includes(form.id)){e.preventDefault();e.stopImmediatePropagation();return;}e.preventDefault();e.stopImmediatePropagation();if(apiBusy||!form.reportValidity())return;
  const val=id=>form.querySelector('#'+id).value;let body;
  if(form.id==='register-form'){body={fullName:val('reg-name').trim(),username:val('reg-account').trim(),password:val('reg-password'),confirmPassword:val('reg-confirm'),nationalId:val('reg-identity').trim(),securityQuestion:val('reg-question').trim(),securityAnswer:val('reg-answer').trim()};if(body.password!==body.confirmPassword){errorFor('reg-confirm','兩次密碼不一致');return;}}
  else body={username:val('account').trim(),password:val('password')};
@@ -347,13 +347,13 @@ document.addEventListener('submit',async e=>{
  catch(e){if(epoch===apiEpoch)apiMessage(e.message);}finally{apiBusy=false;if(button.isConnected)button.disabled=false;}
 },true);
 document.addEventListener('click',async e=>{
- const trigger=e.target.closest('[data-action]');if(!trigger)return;const action=trigger.dataset.action;
+ const trigger=e.target.closest('[data-action]');if(!trigger)return;const action=trigger.dataset.action;if(['user-revoke','confirm-logout'].includes(action)){e.preventDefault();e.stopImmediatePropagation();await handleUserClick(action);return;}
  if(['cancel-modal','confirm-logout'].includes(action)){clearApiTask();if(action==='confirm-logout')apiSession=null;return;}
  if(!['api-create-task','api-copy-task','confirm-bind','simulate-insert','demo-login','demo-reset'].includes(action))return;
  e.preventDefault();e.stopImmediatePropagation();
  if(action==='api-copy-task'){try{await navigator.clipboard.writeText(apiTask.requestId);apiMessage('已複製，請貼到讀卡程式。');}catch{dialog.querySelector('#bind-request')?.select();apiMessage('請手動複製選取的任務編號。');}return;}
  if(!['api-create-task','confirm-bind'].includes(action)||apiBusy||!apiSession)return;
- apiBusy=true;trigger.disabled=true;const epoch=apiEpoch;
+ if(action==='api-create-task'&&walletState.kind==='ready'&&walletState.value.replacementRequired){apiMessage('此帳號需由管理員補卡，不能一般綁卡。');return;}apiBusy=true;trigger.disabled=true;const epoch=apiEpoch;
  try{if(action==='api-create-task'){const result=await backend('/card-reads',{method:'POST',body:{purpose:'BIND'},login:true});if(epoch!==apiEpoch)return;if(!result.requestId||result.purpose!=='BIND'||result.status!=='WAITING'||!Number.isFinite(Date.parse(result.expiresAt)))throw Error('後端任務格式不符');apiTask=result;goto('card-reading');}
  else{if(!apiTask?.cardReadToken)throw Error('尚未取得讀卡憑證');const task=apiTask;const result=await backend('/me/cards/bind',{method:'POST',body:{cardReadToken:task.cardReadToken},login:true});if(epoch!==apiEpoch)return;
  if(!result.card||!result.signingKey||result.card.cardNumber!==task.cardNumber)throw Error('回應資料不完整，請先確認後端是否已綁定');applyWallet({...result.wallet,card:result.card});user().liveFingerprint=result.signingKey.fingerprint;clearApiTask();completion='bind';goto('card-bind-complete');}}
@@ -378,7 +378,7 @@ async function syncAccount(){const session=apiSession;if(!session)return;walletS
  ]);
 }
 function accountStatusMarkup(){if(walletState.kind!=='ready')return `<div class="info-panel notice-panel"><p>${walletState.kind==='error'?esc(walletState.error):'正在查詢帳號與卡片資料…'}</p>${btn('重新查詢','business-refresh')}</div>`;
- const w=walletState.value;return `<div class="info-panel balance-panel"><div class="balance-card"><h2>卡號</h2><p class="card-number">${w.card?esc(w.card.cardNumber):'尚未綁定卡片'}</p><p class="card-state">${w.card?(w.card.status==='ACTIVE'?'卡片有效':'卡片已停用'):'請至卡片管理綁定'}</p></div><div class="balance-side"><h2>可用餘額</h2><div class="balance-row"><p class="balance-value" id="balance-value">${balanceHidden?'****':minorMoney(w.balanceMinor)}</p>${btn(balanceHidden?'顯示餘額':'隱藏餘額','business-balance')}</div></div><div class="actions start"><a class="btn" href="#card">卡片管理</a><a class="btn secondary" href="#transactions">交易紀錄</a>${btn('更新資料','business-refresh',true)}</div></div>`;}
+ const w=walletState.value;return `<div class="info-panel balance-panel"><div class="balance-card"><h2>卡號</h2><p class="card-number">${w.card?esc(w.card.cardNumber):'尚未綁定卡片'}</p><p class="card-state">${w.card?(w.card.status==='ACTIVE'?'卡片有效':'卡片已暫停'):(w.replacementRequired?'卡片已註銷，請洽管理員補卡':'請至卡片管理綁定')}</p></div><div class="balance-side"><h2>可用餘額</h2><div class="balance-row"><p class="balance-value" id="balance-value">${balanceHidden?'****':minorMoney(w.balanceMinor)}</p>${btn(balanceHidden?'顯示餘額':'隱藏餘額','business-balance')}</div></div><div class="actions start"><a class="btn" href="#card">卡片管理</a><a class="btn secondary" href="#transactions">交易紀錄</a>${btn('更新資料','business-refresh',true)}</div></div>`;}
 renderHome=function(){shell('主畫面');workspace(accountStatusMarkup(),false);};
 renderCard=function(){shell('卡片管理');if(walletState.kind!=='ready'){workspace(accountStatusMarkup(),false);return;}const c=walletState.value.card;
  workspace(c?`<div class="info-panel"><h2>目前卡片</h2><dl class="data-list card-details"><div><dt>卡號</dt><dd>${esc(c.cardNumber)}</dd></div><div><dt>卡片狀態</dt><dd>${c.status==='ACTIVE'?'有效':'已停用'}</dd></div><div><dt>綁定時間</dt><dd>${esc(displayTime(c.boundAt))}</dd></div></dl>${btn('更新資料','business-refresh')}</div>`:`<div class="info-panel notice-panel"><p>後端確認目前沒有綁定卡片。</p><a href="#card-insert" class="btn">綁定卡片</a>${btn('更新資料','business-refresh',true)}</div>`,false);};
@@ -435,5 +435,153 @@ document.addEventListener('click',async e=>{const trigger=e.target.closest('[dat
 const priorBusinessRender=render;
 render=function(){businessEpoch++;clearTimeout(businessTimer);if(!apiSession){walletState={kind:'idle'};merchantState={kind:'idle'};businessPayment=null;recordsState=null;}priorBusinessRender();schedulePayment();};
 window.addEventListener('focus',async()=>{const session=apiSession;if(!session||apiBusy||businessBusy||apiTask)return;if(!['home','card','merchant','merchant-profile','merchant-pending'].includes(route))return;await syncAccount();if(apiSession===session)render();});
+
+// Website password recovery. Tokens stay in memory and never enter URLs/storage.
+let passwordRecovery=null,passwordRecoveryBusy=false,passwordRecoveryEpoch=0,passwordLoginNotice='';
+const recoveryRoutes=new Set(['recovery','recovery-question','recovery-password','recovery-complete']);
+function clearPasswordRecovery(){passwordRecovery=null;passwordRecoveryEpoch++;}
+function validRecoveryToken(token){return typeof token==='string'&&/^[0-9a-f]{64}$/.test(token);}
+function validRecoveryExpiry(value){return typeof value==='string'&&Number.isFinite(Date.parse(value))&&Date.parse(value)>Date.now();}
+function recoveryRestart(message){clearPasswordRecovery();location.hash='#recovery';render();apiMessage(message);}
+function renderLiveRecovery(next){
+ apiEpoch++;clearTimeout(apiPollTimer);clearTimeout(businessTimer);businessEpoch++;apiNotice='';
+ if(dialog.open)dialog.close();main.className='';document.body.classList.remove('sidebar-collapsed');document.querySelector('.sidebar-toggle')?.remove();
+ if(next==='recovery-complete'||next==='recovery-question'&&!passwordRecovery?.challengeId||next==='recovery-password'&&!passwordRecovery?.resetToken){clearPasswordRecovery();location.hash='#recovery';next='recovery';}
+ if(next==='recovery')clearPasswordRecovery();
+ route=next;document.title=next==='recovery'?'忘記密碼':next==='recovery-question'?'安全問題驗證':'更新密碼';
+ if(next==='recovery'){
+  authPanel('忘記密碼',`<p class="subtitle">請輸入註冊時的帳號與身分證字號。</p><form id="recovery-form">${field('recovery-account','帳號','text','username')}${field('recovery-identity','身分證字號')}<button class="btn wide" type="submit">下一步</button>${back()}</form>`,'recovery-panel account-step');
+  const account=document.querySelector('#recovery-account');account.pattern='[A-Za-z0-9_]{3,50}';account.maxLength=50;document.querySelector('#recovery-identity').maxLength=10;
+ }else if(next==='recovery-question'){
+  authPanel('安全問題驗證',`<form id="answer-form"><div class="question-heading"><span>安全提示問題</span></div><div class="question-box">${esc(passwordRecovery.question)}</div>${field('recovery-answer','答案')}<p>請於五分鐘內完成驗證。取得問題不代表身分驗證成功。</p><button class="btn wide" type="submit">驗證答案</button><a class="btn secondary wide" href="#recovery">重新開始</a>${back()}</form>`,'recovery-panel question-step');document.querySelector('#recovery-answer').maxLength=128;
+ }else{
+  authPanel('更新密碼',`<form id="recovery-password-form">${field('new-password','新密碼','password','new-password')}${field('confirm-password','請再次輸入新密碼','password','new-password')}<p>密碼須為12–128字元，請於兩分鐘內完成。</p><button class="btn wide" type="submit">確認更新</button><a class="btn secondary wide" href="#recovery">重新開始</a>${back()}</form>`,'recovery-panel password-step');
+  for(const id of ['new-password','confirm-password']){const input=document.querySelector('#'+id);input.minLength=12;input.maxLength=128;}
+ }
+}
+async function handleRecoverySubmit(form){
+ if(passwordRecoveryBusy||!form.reportValidity())return;
+ const value=id=>form.querySelector('#'+id).value;const epoch=passwordRecoveryEpoch;let path,body;
+ if(form.id==='recovery-form'){path='/auth/password/challenges';body={username:value('recovery-account').trim(),nationalId:value('recovery-identity').trim()};}
+ else if(form.id==='answer-form'){
+  if(!passwordRecovery?.challengeId||!validRecoveryExpiry(passwordRecovery.expiresAt)){recoveryRestart('驗證已過期，請重新開始。');return;}
+  const answer=value('recovery-answer');if(answer.length<1||answer.length>128||!answer.trim()){errorFor('recovery-answer','請輸入1–128字元的答案。');return;}
+  path='/auth/password/verify';body={challengeId:passwordRecovery.challengeId,answer};
+ }else{
+  if(!passwordRecovery?.resetToken||passwordRecovery.uncertain||!validRecoveryExpiry(passwordRecovery.expiresAt)){recoveryRestart('重設憑證已無法使用，請重新開始；若先前已送出，請先嘗試登入。');return;}
+  const newPassword=value('new-password'),confirmPassword=value('confirm-password');
+  if(newPassword.length<12||newPassword.length>128){errorFor('new-password','密碼須為12–128字元。');return;}
+  if(newPassword!==confirmPassword){errorFor('confirm-password','兩次密碼不一致。');return;}
+  path='/auth/password/reset';body={resetToken:passwordRecovery.resetToken,newPassword,confirmPassword};
+ }
+ const button=form.querySelector('[type="submit"]');passwordRecoveryBusy=true;button.disabled=true;apiMessage('正在連線後端…');
+ try{
+  const result=await backend(path,{method:'POST',body});if(epoch!==passwordRecoveryEpoch)return;
+  if(path.endsWith('/challenges')){
+   if(!validRecoveryToken(result?.challengeId)||typeof result.question!=='string'||!result.question||!validRecoveryExpiry(result.expiresAt))throw Error('後端驗證資料不完整，請重新開始。');
+   passwordRecovery={challengeId:result.challengeId,question:result.question,expiresAt:result.expiresAt};form.reset();goto('recovery-question');
+  }else if(path.endsWith('/verify')){
+   if(!validRecoveryToken(result?.resetToken)||!validRecoveryExpiry(result.expiresAt)){recoveryRestart('後端重設憑證不完整，請重新開始。');return;}
+   passwordRecovery={resetToken:result.resetToken,expiresAt:result.expiresAt};form.reset();goto('recovery-password');
+  }else{
+   if(result?.reset!==true||result.requireLogin!==true){const error=Error('後端未確認密碼重設結果。');error.uncertain=true;throw error;}
+   form.reset();clearPasswordRecovery();apiSession=null;authenticated=false;users=new Map();currentKey=null;clearApiTask();clearTimeout(businessTimer);businessEpoch++;businessPayment=null;walletState={kind:'idle'};merchantState={kind:'idle'};recordsState=null;
+   passwordLoginNotice='密碼已更新，請使用新密碼重新登入。';goto('login');
+  }
+ }catch(e){
+  if(epoch!==passwordRecoveryEpoch)return;
+  if(path.endsWith('/reset')&&e.uncertain){passwordRecovery=null;passwordRecoveryEpoch++;form.reset();apiMessage('連線中斷，密碼可能已更新。請按「返回登入」，先用新密碼登入確認結果；不要直接重送。');button.disabled=true;return;}
+  if(e.status===401||e.code==='INVALID_RESET_TOKEN'){recoveryRestart(e.message+' 請重新開始。');return;}
+  apiMessage(e.code==='RATE_LIMIT'?'操作過於頻繁，請稍後再試。':e.message);
+ }finally{passwordRecoveryBusy=false;if(button.isConnected&&passwordRecoveryEpoch===epoch)button.disabled=false;}
+}
+const priorRecoveryRender=render;
+render=function(){const next=location.hash.slice(1)||'login';if(recoveryRoutes.has(next)){renderLiveRecovery(next);return;}if(passwordRecovery||recoveryRoutes.has(route))clearPasswordRecovery();priorRecoveryRender();if(next==='login'&&passwordLoginNotice){apiMessage(passwordLoginNotice);passwordLoginNotice='';}};
+
+// User actions from 使用者功能串接與驗收_20261117.md.
+let userActionBusy=false,revokeUncertain=false;
+let recordDateRange={personal:{fromDate:'',toDate:''},merchant:{fromDate:'',toDate:''}};
+function clearUserSession(notice=''){
+ apiSession=null;authenticated=false;users=new Map();currentKey=null;clearApiTask();clearPasswordRecovery();clearTimeout(businessTimer);businessEpoch++;businessPayment=null;walletState={kind:'idle'};merchantState={kind:'idle'};recordsState=null;recordDateRange={personal:{fromDate:'',toDate:''},merchant:{fromDate:'',toDate:''}};revokeUncertain=false;passwordLoginNotice=notice;goto('login');
+}
+const priorUserHome=renderHome;
+renderHome=function(){priorUserHome();document.querySelector('#workspace-content').insertAdjacentHTML('beforeend','<div class="actions start"><a class="btn secondary" href="#account-password">變更網站密碼</a></div>');};
+renderCard=function(){shell('卡片管理');if(walletState.kind!=='ready'){workspace(accountStatusMarkup(),false);return;}const w=walletState.value,c=w.card;
+ workspace(c?`<div class="info-panel"><h2>目前卡片</h2><dl class="data-list card-details"><div><dt>卡號</dt><dd>${esc(c.cardNumber)}</dd></div><div><dt>卡片狀態</dt><dd>${c.status==='ACTIVE'?'有效':'已暫停，請聯絡管理員'}</dd></div><div><dt>綁定時間</dt><dd>${esc(displayTime(c.boundAt))}</dd></div></dl><div class="actions start">${btn('更新資料','business-refresh')}<a class="btn secondary" href="#account-password">變更網站密碼</a><a class="btn secondary" href="#card-cancel">遺失註銷</a></div></div>`:`<div class="info-panel notice-panel"><p>${w.replacementRequired?'卡片已註銷，需由管理員核對身分後辦理補卡。原帳號餘額與交易紀錄保留。':'後端確認目前沒有綁定卡片。'}</p>${w.replacementRequired?'':'<a href="#card-insert" class="btn">綁定卡片</a>'}${btn('更新資料','business-refresh',true)}</div>`,false);
+};
+displayTime=function(value){const d=new Date(value);return Number.isNaN(d.getTime())?'—':d.toLocaleString('zh-TW',{timeZone:'Asia/Taipei',hour12:false});};
+function renderUserAction(next){
+ apiEpoch++;businessEpoch++;clearTimeout(businessTimer);clearTimeout(apiPollTimer);if(dialog.open)dialog.close();route=next;
+ if(!apiSession){goto('login');return;}
+ shell(next==='card-cancel'?'遺失註銷':'變更網站密碼');
+ if(next==='card-cancel'){
+  const w=walletState.kind==='ready'?walletState.value:null;
+  if(!w?.card){workspace('<div class="info-panel notice-panel"><p>請先查詢本人目前卡片，確認是否仍可註銷。</p>'+btn('更新資料','business-refresh')+'<a href="#card" class="btn secondary">返回卡片管理</a></div>',false);return;}
+  workspace(`<div class="info-panel"><h2>確認註銷卡片</h2><p>卡號：${esc(w.card.cardNumber)}</p><p>註銷後此卡永久失效，無法恢復或重新綁回。餘額與交易紀錄保留，須由管理員核對身分後補發新卡。</p>${revokeUncertain?'<p role="alert">上次結果尚未確認，請先更新資料核對卡片狀態。</p>':btn('確認永久註銷','user-revoke')}<div class="actions start">${btn('更新資料','business-refresh')}<a href="#card" class="btn secondary">取消並返回</a></div></div>`,false);
+ }else{
+  workspace(`<div class="info-panel"><form id="account-password-form">${field('account-old-password','目前網站密碼','password','current-password')}${field('account-new-password','新網站密碼','password','new-password')}${field('account-confirm-password','確認新密碼','password','new-password')}<p>新密碼為12–128字元，且不能與舊密碼相同。成功後所有裝置須重新登入。</p><button class="btn" type="submit">確認變更</button><a href="#home" class="btn secondary">返回主畫面</a></form></div>`,false);
+  document.querySelector('#account-old-password').maxLength=128;for(const id of ['account-new-password','account-confirm-password']){const input=document.querySelector('#'+id);input.minLength=12;input.maxLength=128;}
+ }
+}
+async function handleUserSubmit(form){
+ if(form.id==='record-date-form'){
+  const from=form.querySelector('#records-from').value,to=form.querySelector('#records-to').value;
+  if(!validCalendarDate(from)||!validCalendarDate(to)||from&&to&&from>to){apiMessage('請輸入有效日期，起日不能晚於迄日。');return;}
+  recordDateRange[route==='merchant-receipts'?'merchant':'personal']={fromDate:from,toDate:to};recordsState=null;render();return;
+ }
+ if(userActionBusy||!apiSession||!form.reportValidity())return;
+ const body={oldPassword:form.querySelector('#account-old-password').value,newPassword:form.querySelector('#account-new-password').value,confirmPassword:form.querySelector('#account-confirm-password').value};
+ if(body.oldPassword.length<1||body.oldPassword.length>128){errorFor('account-old-password','請輸入目前密碼，最多128字元。');return;}
+ if(body.newPassword.length<12||body.newPassword.length>128){errorFor('account-new-password','新密碼須為12–128字元。');return;}
+ if(body.newPassword!==body.confirmPassword){errorFor('account-confirm-password','兩次密碼不一致。');return;}
+ if(body.oldPassword===body.newPassword){errorFor('account-new-password','新密碼不能與目前密碼相同。');return;}
+ const session=apiSession,epoch=apiEpoch,button=form.querySelector('[type="submit"]');userActionBusy=true;button.disabled=true;
+ try{const result=await backend('/auth/password/change',{method:'POST',body,login:true});if(apiSession!==session)return;
+  if(result?.changed!==true||result.requireLogin!==true){const e=Error('後端未確認變更結果');e.uncertain=true;throw e;}
+  form.reset();clearUserSession('網站密碼已更新，請使用新密碼重新登入。');
+ }catch(e){if(apiSession!==session)return;if(e.uncertain){form.reset();clearUserSession('變更結果尚未確認，請先嘗試使用新密碼登入。');}else if(e.status===401){clearUserSession('登入已失效，請重新登入。');}else if(epoch===apiEpoch)apiMessage(e.message);}
+ finally{userActionBusy=false;if(button.isConnected)button.disabled=false;}
+}
+async function handleUserClick(action){
+ if(userActionBusy||!apiSession)return;const session=apiSession;userActionBusy=true;
+ try{
+  if(action==='confirm-logout'){
+   try{await backend('/auth/logout',{method:'POST',body:{},login:true});}catch(e){if(e.status!==401)throw e;}
+   if(apiSession===session)clearUserSession('已登出。');return;
+  }
+  // Always recheck the current server card before revoking; never accept a card ID from the page.
+  const wallet=await backend('/me/wallet',{login:true});if(apiSession!==session)return;applyWallet(wallet);
+  if(!wallet.card){revokeUncertain=false;goto('card');return;}
+  const result=await backend('/me/cards/revoke',{method:'POST',body:{},login:true});if(apiSession!==session)return;
+  if(result?.revoked!==true){const e=Error('後端未確認註銷結果');e.uncertain=true;throw e;}
+  revokeUncertain=false;await syncAccount();if(apiSession===session){goto('card');render();apiMessage('後端已確認卡片註銷。');}
+ }catch(e){if(apiSession!==session)return;
+  if(e.status===401){clearUserSession('登入已失效，請重新登入。');return;}
+  if(action==='user-revoke'&&(e.uncertain||e.code==='NO_BOUND_CARD')){revokeUncertain=true;await syncAccount();if(apiSession!==session)return;if(walletState.kind==='ready'){revokeUncertain=false;goto('card');render();}apiMessage('請依更新後的卡片狀態確認註銷結果。'+(walletState.kind==='error'?e.message:''));}
+  else apiMessage(action==='confirm-logout'?'登出尚未確認，請重試。'+e.message:e.message);
+ }finally{userActionBusy=false;}
+}
+function validCalendarDate(s){if(!s)return true;if(!/^\d{4}-\d{2}-\d{2}$/.test(s))return false;const d=new Date(s+'T00:00:00Z');return !Number.isNaN(d.getTime())&&d.toISOString().slice(0,10)===s;}
+renderRecords=function(merchant=false){
+ shell(merchant?'商家收款紀錄':'交易紀錄');const type=merchant?'merchant':'personal',range=recordDateRange[type];let s=recordsState?.type===type?recordsState:null;
+ if(!s){recordsState={type,kind:'loading',items:[],cursor:null,range:{...range}};s=recordsState;loadRecords(s,false);}
+ const headers=merchant?['流水號','日期（台北）','金額','狀態']:['帳本編號','日期（台北）','類型','金額','狀態'];
+ const rows=s.items.map(r=>`<tr><td>${esc(r.transactionId)}</td><td>${esc(displayTime(r.completedAt||r.createdAt))}</td>${merchant?'':`<td>${esc(r.type)}</td>`}<td>${minorMoney(merchant?r.amountCents:r.amountMinor)}</td><td>${esc(r.status)}</td></tr>`).join('');
+ workspace(`<div class="info-panel"><form id="record-date-form" class="date-filter"><label for="records-from">起日（台北）</label><input id="records-from" type="date" value="${esc(range.fromDate)}"><label for="records-to">迄日（含當日）</label><input id="records-to" type="date" value="${esc(range.toDate)}"><button class="btn" type="submit">查詢</button>${btn('清除日期','user-clear-dates',true)}</form><p>依交易完成／入帳時間篩選全部紀錄，再分頁。</p><div class="actions start">${btn('重新整理紀錄','business-record-refresh')}<a href="#${merchant?'merchant':'home'}" class="btn secondary">返回</a></div><p role="status">${s.kind==='error'?esc(s.error):s.kind==='loading'?'正在查詢紀錄…':''}</p><div class="table-scroll"><table><thead><tr>${headers.map(h=>'<th>'+h+'</th>').join('')}</tr></thead><tbody>${rows||`<tr><td colspan="${headers.length}">${s.kind==='ready'?'目前沒有符合條件的紀錄':'尚未取得紀錄'}</td></tr>`}</tbody></table></div>${s.cursor?btn('載入下一頁','business-record-more'):''}</div>`,false);
+};
+loadRecords=async function(s,more){const session=apiSession;if(!session)return;try{
+ const query=new URLSearchParams({limit:'20'});for(const [k,v] of Object.entries(s.range||{}))if(v)query.set(k,v);if(more)query.set(s.type==='merchant'?'cursor':'after',s.cursor);
+ const result=await backend((s.type==='merchant'?'/merchant/transactions':'/me/transactions')+'?'+query.toString(),{login:true,raw:true});if(apiSession!==session||recordsState!==s)return;
+ const rows=s.type==='merchant'?result.items:result.data;if(!Array.isArray(rows))throw Error('交易紀錄格式不符');const next=s.type==='merchant'?result.nextCursor:result.nextAfter,ids=new Set(s.items.map(r=>r.transactionId));s.items.push(...rows.filter(r=>!ids.has(r.transactionId)));s.cursor=rows.length&&next&&next!==s.cursor?next:null;s.kind='ready';
+ }catch(e){if(apiSession===session&&recordsState===s){s.kind='error';s.error=e.message;}}
+ if(apiSession===session&&recordsState===s&&['transactions','transaction-search','merchant-receipts'].includes(route))render();
+};
+document.addEventListener('click',e=>{const trigger=e.target.closest('[data-action]');if(trigger?.dataset.action==='user-clear-dates'){e.preventDefault();e.stopImmediatePropagation();recordDateRange[route==='merchant-receipts'?'merchant':'personal']={fromDate:'',toDate:''};recordsState=null;render();}},true);
+const priorUserRender=render;
+render=function(){const next=location.hash.slice(1)||'login';
+ if(['account-password','card-password','card-cancel'].includes(next)){renderUserAction(next);return;}
+ if(['card-insert','card-reading','card-bind-confirm'].includes(next)&&walletState.kind==='ready'&&walletState.value.replacementRequired){clearApiTask();goto('card');return;}
+ priorUserRender();
+};
 
 render();
