@@ -190,7 +190,7 @@ function render() {
   if(route==='card-bind-confirm'&&!readReady){goto('card-insert');return;}
   if(index>=8){
     if(route==='merchant-receipts'&&user().merchant!=='approved'){goto('merchant');return;}
-    if(route==='merchant-application'&&user().merchant!=='none'){goto('merchant');return;}
+    if(route==='merchant-application'&&!['none','rejected'].includes(user().merchant)){goto('merchant');return;}
     if(['card-password','card-cancel'].includes(route)&&!user().bound){goto('card');return;}
     if(['card-insert','card-reading','card-bind-confirm'].includes(route)&&user().bound){goto('card');return;}
   }
@@ -293,15 +293,15 @@ previewSelect.addEventListener('change',()=>{if(previewSelect.value){const n=pre
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){demoTools.open=false;if(menuOpen&&!dialog.open){menuOpen=false;document.querySelector('.sidebar')?.classList.remove('is-open');document.querySelector('.mobile-menu')?.setAttribute('aria-expanded','false');document.querySelector('.mobile-menu')?.focus();}}});
 window.addEventListener('hashchange',()=>render());
 // Appended to the original app.js at build time. Original visual components remain.
-const API_BASE='https://arlington-hunting-den-owned.trycloudflare.com/api/v1';
+const API_BASE='https://ips-totals-custom-feature.trycloudflare.com/api/v1';
 let apiSession=null,apiTask=null,apiEpoch=0,apiPollTimer=null,apiBusy=false,apiNotice='';
 const originalRender=render,originalModal=renderModal,originalRegister=renderRegister;
-async function backend(path,{method='GET',body,login=false}={}){
+async function backend(path,{method='GET',body,login=false,raw=false,headers:extraHeaders={}}={}){
  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
- try{const headers={Accept:'application/json'};if(body)headers['Content-Type']='application/json';if(login){if(!apiSession)throw Error('請先登入');headers.Authorization=`Bearer ${apiSession.accessToken}`;}
+ try{const headers={Accept:'application/json',...extraHeaders};if(body)headers['Content-Type']='application/json';if(login){if(!apiSession)throw Error('請先登入');headers.Authorization=`Bearer ${apiSession.accessToken}`;}
  const response=await fetch(API_BASE+path,{method,headers,body:body?JSON.stringify(body):undefined,signal:controller.signal,cache:'no-store',credentials:'omit',redirect:'error'});
- const result=await response.json().catch(()=>{throw Error('後端沒有回傳有效JSON');});if(!response.ok){const err=Error(result.error?.message||result.error?.code||`HTTP ${response.status}`);err.code=result.error?.code;throw err;}
- if(!result.data)throw Error('後端回應缺少data欄位');return result.data;
+ const result=await response.json().catch(()=>{throw Error('後端沒有回傳有效JSON');});if(!response.ok){const err=Error(result.error?.message||result.error?.code||`HTTP ${response.status}`);err.code=result.error?.code;err.status=response.status;throw err;}
+ if(raw)return result;if(!Object.hasOwn(result,'data'))throw Error('後端回應缺少data欄位');return result.data;
  }catch(e){if(e.name==='AbortError'||e instanceof TypeError){const error=Error('連線中斷，結果尚未確認。請先核對後端結果，勿重複提交。');error.uncertain=true;throw error;}throw e;}finally{clearTimeout(timeout);}
 }
 function apiMessage(text){apiNotice=text;let target=document.querySelector('#api-status');if(!target){target=document.createElement('p');target.id='api-status';target.className='error-text';target.setAttribute('role','status');target.setAttribute('aria-live','polite');(dialog.open?dialog:main.querySelector('.login-panel')||main).append(target);}target.textContent=text;}
@@ -322,7 +322,7 @@ render=function(){apiEpoch++;clearTimeout(apiPollTimer);apiPollTimer=null;apiNot
  const next=location.hash.slice(1)||'login';
  if(next.startsWith('preview/')){goto('login');return;}
  if(next==='login'){apiSession=null;clearApiTask();}
- const supported=['login','register','register-success','home','home-unbound','card','card-unbound','card-insert','card-reading','card-bind-confirm','card-bind-complete','logout'];
+ const supported=['login','register','register-success','home','home-unbound','card','card-unbound','card-insert','card-reading','card-bind-confirm','card-bind-complete','logout','merchant','merchant-application','merchant-pending','merchant-profile','merchant-receipts','transactions','transaction-search'];
  if(!supported.includes(next)){if(dialog.open)dialog.close();main.className='';panelUnavailable(next);return;}
  originalRender();
  if(['card-insert','card-reading'].includes(route)&&apiTask&&apiTask.status==='WAITING')schedulePoll(apiEpoch);
@@ -336,14 +336,14 @@ async function pollTask(epoch){if(epoch!==apiEpoch||!apiTask||!apiSession)return
  if(result.status!=='WAITING')throw Error('讀卡狀態不符');schedulePoll(epoch);
  }catch(e){if(epoch!==apiEpoch)return;apiMessage(e.message);if(e.uncertain){apiPollTimer=setTimeout(()=>pollTask(epoch),3000);return;}clearApiTask();dialog.querySelector('.question')?.remove();const refresh=document.createElement('button');refresh.type='button';refresh.className='btn';refresh.dataset.action='api-create-task';refresh.textContent='重新建立綁卡任務';dialog.append(refresh);}}
 document.addEventListener('submit',async e=>{
- const form=e.target;if(!['login-form','register-form'].includes(form.id)){e.preventDefault();e.stopImmediatePropagation();return;}e.preventDefault();e.stopImmediatePropagation();if(apiBusy||!form.reportValidity())return;
+ const form=e.target;if(['merchant-form','payment-form'].includes(form.id)){e.preventDefault();e.stopImmediatePropagation();await handleBusinessSubmit(form);return;}if(!['login-form','register-form'].includes(form.id)){e.preventDefault();e.stopImmediatePropagation();return;}e.preventDefault();e.stopImmediatePropagation();if(apiBusy||!form.reportValidity())return;
  const val=id=>form.querySelector('#'+id).value;let body;
  if(form.id==='register-form'){body={fullName:val('reg-name').trim(),username:val('reg-account').trim(),password:val('reg-password'),confirmPassword:val('reg-confirm'),nationalId:val('reg-identity').trim(),securityQuestion:val('reg-question').trim(),securityAnswer:val('reg-answer').trim()};if(body.password!==body.confirmPassword){errorFor('reg-confirm','兩次密碼不一致');return;}}
  else body={username:val('account').trim(),password:val('password')};
  apiBusy=true;const epoch=apiEpoch;const button=form.querySelector('[type="submit"]');button.disabled=true;apiMessage('正在連線後端…');
  try{const result=await backend(form.id==='register-form'?'/auth/register':'/auth/login',{method:'POST',body});if(epoch!==apiEpoch)return;
  if(form.id==='register-form'){form.reset();completion='register';goto('register-success');}
- else{if(!result.accessToken||!result.user)throw Error('登入回應不完整');apiSession=result;users=new Map();currentKey=result.user.username;users.set(currentKey,{name:result.user.fullName,username:currentKey,bound:false,merchant:'none',sample:false});authenticated=true;completion=null;clearApiTask();goto('home');}}
+ else{if(!result.accessToken||!result.user)throw Error('登入回應不完整');apiSession=result;users=new Map();currentKey=result.user.username;users.set(currentKey,{name:result.user.fullName,username:currentKey,bound:null,merchant:'unknown',sample:false});authenticated=true;completion=null;clearApiTask();recordsState=null;restorePayment();await syncAccount();if(apiSession!==result)return;goto('home');}}
  catch(e){if(epoch===apiEpoch)apiMessage(e.message);}finally{apiBusy=false;if(button.isConnected)button.disabled=false;}
 },true);
 document.addEventListener('click',async e=>{
@@ -356,10 +356,84 @@ document.addEventListener('click',async e=>{
  apiBusy=true;trigger.disabled=true;const epoch=apiEpoch;
  try{if(action==='api-create-task'){const result=await backend('/card-reads',{method:'POST',body:{purpose:'BIND'},login:true});if(epoch!==apiEpoch)return;if(!result.requestId||result.purpose!=='BIND'||result.status!=='WAITING'||!Number.isFinite(Date.parse(result.expiresAt)))throw Error('後端任務格式不符');apiTask=result;goto('card-reading');}
  else{if(!apiTask?.cardReadToken)throw Error('尚未取得讀卡憑證');const task=apiTask;const result=await backend('/me/cards/bind',{method:'POST',body:{cardReadToken:task.cardReadToken},login:true});if(epoch!==apiEpoch)return;
- if(!result.card||!result.signingKey||result.card.cardNumber!==task.cardNumber)throw Error('回應資料不完整，請先確認後端是否已綁定');user().bound=true;user().liveCardNumber=result.card.cardNumber;user().liveFingerprint=result.signingKey.fingerprint;clearApiTask();completion='bind';goto('card-bind-complete');}}
+ if(!result.card||!result.signingKey||result.card.cardNumber!==task.cardNumber)throw Error('回應資料不完整，請先確認後端是否已綁定');applyWallet({...result.wallet,card:result.card});user().liveFingerprint=result.signingKey.fingerprint;clearApiTask();completion='bind';goto('card-bind-complete');}}
  catch(e){if(epoch===apiEpoch){apiMessage(e.message);if(action==='confirm-bind'){trigger.disabled=true;apiMessage(e.message+' 請先核對後端結果再繼續，不直接重送。');}else trigger.disabled=false;}}
  finally{apiBusy=false;}
 },true);
 // Use the original layout, but remove the prototype's seeded identities and preview controls.
 users=new Map();currentKey=null;authenticated=false;if(demoTools)demoTools.hidden=true;
+// Backend contract from message (1).txt. No simulated balances or merchant approvals.
+let walletState={kind:'idle'},merchantState={kind:'idle'},businessPayment=null,businessTimer=null,businessEpoch=0,businessBusy=false,recordsState=null;
+const previousBusinessModal=renderModal;
+renderModal=function(){previousBusinessModal();if(route==='merchant-application'){dialog.querySelectorAll('.demo-note').forEach(n=>n.remove());const m=merchantState.value;if(m){dialog.querySelector('#merchant-name').value=m.merchantName||'';dialog.querySelector('#merchant-phone').value=m.phone||'';}}};
+const finalPaymentStates=new Set(['SUCCEEDED','FAILED','CANCELLED','EXPIRED']);
+function minorMoney(v){if(!/^[0-9]+$/.test(String(v)))return '—';const n=BigInt(v);return `NT$ ${(n/100n).toLocaleString('en-US')}.${String(n%100n).padStart(2,'0')}`;}
+function centsFromInput(v){if(!/^\d+(?:\.\d{1,2})?$/.test(v))throw Error('請輸入正確金額，最多兩位小數');const [whole,fraction='']=v.split('.');const n=BigInt(whole)*100n+BigInt(fraction.padEnd(2,'0'));if(n<1n||n>2147483647n)throw Error('金額需介於0.01與21,474,836.47元');return Number(n);}
+function applyWallet(w){if(!w||!/^\d+$/.test(w.balanceMinor)||!Object.hasOwn(w,'card'))throw Error('錢包回應格式不符');if(w.card&&(!w.card.cardNumber||!['ACTIVE','SUSPENDED'].includes(w.card.status)))throw Error('卡片回應格式不符');walletState={kind:'ready',value:w};if(user()){user().bound=w.card!==null;user().liveCardNumber=w.card?.cardNumber;user().cardStatus=w.card?.status;}}
+function applyMerchant(m){if(!m||!['PENDING','APPROVED','REJECTED','SUSPENDED'].includes(m.status))throw Error('商家狀態格式不符');merchantState={kind:'ready',value:m};if(user()){user().merchant=({PENDING:'pending',APPROVED:'approved',REJECTED:'rejected',SUSPENDED:'suspended'})[m.status];user().merchantName=m.merchantName;user().phone=m.phone;}}
+async function syncAccount(){const session=apiSession;if(!session)return;walletState={kind:'loading'};merchantState={kind:'loading'};
+ await Promise.all([
+  backend('/me/wallet',{login:true}).then(w=>{if(apiSession===session)applyWallet(w);}).catch(e=>{if(apiSession===session)walletState={kind:'error',error:e.message};}),
+  backend('/me/merchant',{login:true}).then(m=>{if(apiSession===session)applyMerchant(m);}).catch(e=>{if(apiSession!==session)return;if(e.code==='MERCHANT_NOT_FOUND'&&e.status===404){merchantState={kind:'none'};user().merchant='none';}else merchantState={kind:'error',error:e.message};})
+ ]);
+}
+function accountStatusMarkup(){if(walletState.kind!=='ready')return `<div class="info-panel notice-panel"><p>${walletState.kind==='error'?esc(walletState.error):'正在查詢帳號與卡片資料…'}</p>${btn('重新查詢','business-refresh')}</div>`;
+ const w=walletState.value;return `<div class="info-panel balance-panel"><div class="balance-card"><h2>卡號</h2><p class="card-number">${w.card?esc(w.card.cardNumber):'尚未綁定卡片'}</p><p class="card-state">${w.card?(w.card.status==='ACTIVE'?'卡片有效':'卡片已停用'):'請至卡片管理綁定'}</p></div><div class="balance-side"><h2>可用餘額</h2><div class="balance-row"><p class="balance-value" id="balance-value">${balanceHidden?'****':minorMoney(w.balanceMinor)}</p>${btn(balanceHidden?'顯示餘額':'隱藏餘額','business-balance')}</div></div><div class="actions start"><a class="btn" href="#card">卡片管理</a><a class="btn secondary" href="#transactions">交易紀錄</a>${btn('更新資料','business-refresh',true)}</div></div>`;}
+renderHome=function(){shell('主畫面');workspace(accountStatusMarkup(),false);};
+renderCard=function(){shell('卡片管理');if(walletState.kind!=='ready'){workspace(accountStatusMarkup(),false);return;}const c=walletState.value.card;
+ workspace(c?`<div class="info-panel"><h2>目前卡片</h2><dl class="data-list card-details"><div><dt>卡號</dt><dd>${esc(c.cardNumber)}</dd></div><div><dt>卡片狀態</dt><dd>${c.status==='ACTIVE'?'有效':'已停用'}</dd></div><div><dt>綁定時間</dt><dd>${esc(displayTime(c.boundAt))}</dd></div></dl>${btn('更新資料','business-refresh')}</div>`:`<div class="info-panel notice-panel"><p>後端確認目前沒有綁定卡片。</p><a href="#card-insert" class="btn">綁定卡片</a>${btn('更新資料','business-refresh',true)}</div>`,false);};
+function displayTime(v){const d=new Date(v);return Number.isNaN(d.getTime())?'—':d.toLocaleString('zh-TW');}
+renderMerchant=function(){shell('商家介面');let html='';const s=merchantState;
+ if(['idle','loading','error'].includes(s.kind))html=`<div class="info-panel notice-panel"><p>${s.kind==='error'?esc(s.error):'正在查詢商家資料…'}</p>${btn('重新查詢','business-refresh')}</div>`;
+ else if(s.kind==='none')html='<div class="info-panel merchant-unapplied"><h2>尚未申請商家</h2><a href="#merchant-application" class="btn">申請商家權限</a></div>';
+ else{const m=s.value,labels={PENDING:'待審核',APPROVED:'已核准',REJECTED:'申請被拒絕',SUSPENDED:'商家已停權'};
+ html=`<div class="info-panel profile-panel"><div class="profile-heading"><h2>商家資訊</h2><span class="badge">${labels[m.status]}</span></div><dl class="data-list"><div><dt>商家名稱</dt><dd>${esc(m.merchantName)}</dd></div><div><dt>電話</dt><dd>${esc(m.phone)}</dd></div><div><dt>申請時間</dt><dd>${esc(displayTime(m.appliedAt))}</dd></div>${m.reviewNote?`<div><dt>審核備註</dt><dd>${esc(m.reviewNote)}</dd></div>`:''}</dl><div class="panel-footer">${btn('更新審核狀態','business-refresh',true)}${m.status==='REJECTED'?'<a href="#merchant-application" class="btn">重新申請</a>':''}${m.status==='APPROVED'?'<a href="#merchant-receipts" class="btn">收款紀錄</a>':''}</div>${m.status==='PENDING'?'<p>申請已送出，請等待管理員審核。</p>':''}${m.status==='SUSPENDED'?'<p>目前無法收款，請聯絡管理員。</p>':''}</div>`;
+ if(m.status==='APPROVED')html+=livePaymentPanel();}
+ workspace(html,false);
+};
+function paymentStorageKey(){return 'ewallet.pending.'+encodeURIComponent(API_BASE)+'.'+encodeURIComponent(apiSession.user.userId||apiSession.user.username);}
+function savePayment(){sessionStorage.setItem(paymentStorageKey(),JSON.stringify(businessPayment));}
+function restorePayment(){businessPayment=null;try{const v=JSON.parse(sessionStorage.getItem(paymentStorageKey())||'null');if(v&&typeof v.key==='string'&&v.body?.terminalId&&Number.isInteger(v.body.amountCents)&&v.body.amountCents>0){businessPayment=v;}}catch{apiNotice='無法讀取上次付款資料，請先向後端確認尚未完成的訂單。';}}
+function livePaymentPanel(){const p=businessPayment;let content;
+ if(!p)content=`<form id="payment-form"><div class="payment-fields">${field('payment-amount','付款金額（新台幣，最多兩位小數）')}${field('payment-terminal','授權讀卡終端代號，例如 reader01')}</div><button class="btn" type="submit">開始收款</button></form><p>商家核准後，仍需由後端登記商家代碼與授權終端。</p>`;
+ else{const order=p.order,state=order?.status;const labels={WAITING_CARD:'等待付款人插卡',PROCESSING:'付款處理中',SUCCEEDED:'付款完成，請取卡',FAILED:'付款失敗',CANCELLED:'已取消',EXPIRED:'訂單已逾期'};
+ content=`<dl class="payment-summary"><div><dt>金額</dt><dd>${minorMoney(p.body.amountCents)}</dd></div><div><dt>終端</dt><dd>${esc(p.body.terminalId)}</dd></div>${order?`<div><dt>交易單號</dt><dd style="overflow-wrap:anywhere">${esc(order.paymentId)}</dd></div>`:''}</dl><p class="payment-status" role="status">${labels[state]||'建立結果待確認'}</p>${p.error?`<p role="alert">${esc(p.error)}</p>`:''}${order?.failureCode?`<p>原因：${esc(order.failureCode)}</p>`:''}<div class="actions start">${!order?btn('使用原請求確認訂單','business-retry-create')+(p.creationRejected?btn('修正收款資料','business-reset-rejected',true):''):''}${order&&!finalPaymentStates.has(state)?btn('查詢付款結果','business-query')+btn('取消收款','business-cancel',true):''}${finalPaymentStates.has(state)?btn('下一筆收款','business-new')+'<a href="#merchant-receipts" class="btn secondary">查看收款紀錄</a>':''}</div>`;}
+ return `<section class="info-panel payment-panel"><h2>刷卡收款</h2>${content}</section>`;
+}
+function checkPaymentOrder(order,p){if(!order||!/^[0-9a-f]{32}$/.test(order.paymentId)||order.amountCents!==p.body.amountCents||order.terminalId!==p.body.terminalId||!['WAITING_CARD','PROCESSING','SUCCEEDED','FAILED','CANCELLED','EXPIRED'].includes(order.status))throw Error('後端訂單內容或狀態不符');if(p.order&&p.order.paymentId!==order.paymentId)throw Error('後端回傳其他訂單');}
+async function updatePaymentOrder(order,p,session){if(apiSession!==session||businessPayment!==p)return;checkPaymentOrder(order,p);const firstSuccess=order.status==='SUCCEEDED'&&p.order?.status!=='SUCCEEDED';p.order=order;p.error=null;savePayment();if(firstSuccess){await syncAccount();recordsState=null;}if(apiSession===session&&['merchant','merchant-profile','merchant-pending'].includes(route))render();}
+async function createPayment(p){const session=apiSession;try{const order=await backend('/payments',{method:'POST',body:p.body,headers:{'Idempotency-Key':p.key},login:true,raw:true});await updatePaymentOrder(order,p,session);}catch(e){if(apiSession===session&&businessPayment===p){p.error=e.message;p.creationRejected=!!(e.status>=400&&e.status<500&&['INVALID_AMOUNT','INVALID_REQUEST','MERCHANT_DISABLED','TERMINAL_NOT_ALLOWED','TERMINAL_BUSY','UNAUTHENTICATED'].includes(e.code));savePayment();render();}}}
+async function queryPayment(p,epoch){if(!p.order||apiSession===null)return;const session=apiSession;
+ try{const order=await backend('/payments/'+p.order.paymentId,{login:true,raw:true});if(epoch!==businessEpoch||businessPayment!==p||apiSession!==session)return;await updatePaymentOrder(order,p,session);}
+ catch(e){if(epoch===businessEpoch&&businessPayment===p&&apiSession===session){p.error='付款結果尚未確認：'+e.message;savePayment();if(['merchant','merchant-profile'].includes(route))render();}}
+}
+function schedulePayment(){clearTimeout(businessTimer);const p=businessPayment;if(p?.order&&!finalPaymentStates.has(p.order.status)&&apiSession&&['merchant','merchant-profile','merchant-pending'].includes(route)){const epoch=businessEpoch;businessTimer=setTimeout(()=>queryPayment(p,epoch),1000);}}
+async function handleBusinessSubmit(form){if(businessBusy||apiBusy||!apiSession||!form.reportValidity())return;businessBusy=true;const session=apiSession;const epoch=apiEpoch,button=form.querySelector('[type="submit"]');button.disabled=true;
+ try{if(form.id==='merchant-form'){if(!['none'].includes(merchantState.kind)&&merchantState.value?.status!=='REJECTED')throw Error('請先更新目前商家狀態');const body={merchantName:form.querySelector('#merchant-name').value.trim(),phone:form.querySelector('#merchant-phone').value.trim()};const data=await backend('/me/merchant',{method:'POST',body,login:true});if(apiSession!==session)return;applyMerchant(data);goto('merchant');}
+ else if(form.id==='payment-form'){if(merchantState.value?.status!=='APPROVED')throw Error('商家尚未核准');if(businessPayment)throw Error('請先確認上一筆訂單結果');const amount=centsFromInput(form.querySelector('#payment-amount').value.trim()),terminal=form.querySelector('#payment-terminal').value.trim();if(!terminal||terminal.length>100)throw Error('請填有效的終端代號');const p={key:crypto.randomUUID(),body:{amountCents:amount,terminalId:terminal},order:null};businessPayment=p;try{savePayment();}catch(e){businessPayment=null;throw Error('無法保存重送識別碼，尚未送出訂單');}await createPayment(p);}}
+ catch(e){if(apiSession===session&&epoch===apiEpoch)apiMessage(e.message);}finally{businessBusy=false;if(button.isConnected)button.disabled=false;}}
+renderRecords=function(merchant=false){shell(merchant?'商家收款紀錄':'交易紀錄');const type=merchant?'merchant':'personal';let s=recordsState?.type===type?recordsState:null;
+ if(!s){recordsState={type,kind:'loading',items:[],cursor:null};s=recordsState;loadRecords(s,false);}
+ const headers=merchant?['流水號','日期','金額','狀態']:['帳本編號','日期','類型','金額','狀態'];
+ const rows=s.items.map(r=>`<tr><td data-label="${headers[0]}">${esc(r.transactionId)}</td><td data-label="日期">${esc(displayTime(r.completedAt||r.createdAt))}</td>${merchant?'':`<td data-label="類型">${esc(r.type)}</td>`}<td data-label="金額">${minorMoney(merchant?r.amountCents:r.amountMinor)}</td><td data-label="狀態">${esc(r.status)}</td></tr>`).join('');
+ workspace(`<div class="info-panel"><div class="actions start">${btn('重新整理紀錄','business-record-refresh')}<a href="#${merchant?'merchant':'home'}" class="btn secondary">返回</a></div><p role="status">${s.kind==='error'?esc(s.error):s.kind==='loading'?'正在查詢紀錄…':''}</p><div class="table-scroll"><table><thead><tr>${headers.map(h=>'<th>'+h+'</th>').join('')}</tr></thead><tbody>${rows||`<tr><td colspan="${headers.length}">${s.kind==='ready'?'目前沒有紀錄':'尚未取得紀錄'}</td></tr>`}</tbody></table></div>${s.cursor?btn('載入下一頁','business-record-more'):''}</div>`,false);
+};
+async function loadRecords(s,more){const session=apiSession;if(!session)return;try{const path=s.type==='merchant'?'/merchant/transactions?limit=20'+(more?'&cursor='+encodeURIComponent(s.cursor):''):'/me/transactions?limit=20'+(more?'&after='+encodeURIComponent(s.cursor):'');const result=await backend(path,{login:true,raw:true});if(apiSession!==session||recordsState!==s)return;const rows=s.type==='merchant'?result.items:result.data;if(!Array.isArray(rows))throw Error('交易紀錄格式不符');const next=s.type==='merchant'?result.nextCursor:result.nextAfter;const ids=new Set(s.items.map(r=>r.transactionId));s.items.push(...rows.filter(r=>!ids.has(r.transactionId)));s.cursor=next&&next!==s.cursor?next:null;s.kind='ready';}catch(e){if(apiSession===session&&recordsState===s){s.kind='error';s.error=e.message;}}if(apiSession===session&&recordsState===s&&['transactions','transaction-search','merchant-receipts'].includes(route))render();}
+document.addEventListener('click',async e=>{const trigger=e.target.closest('[data-action]');if(!trigger?.dataset.action.startsWith('business-'))return;e.preventDefault();e.stopImmediatePropagation();const action=trigger.dataset.action;const session=apiSession;if(!session||businessBusy)return;
+ if(action==='business-balance'){balanceHidden=!balanceHidden;render();return;}
+ if(action==='business-record-refresh'){recordsState=null;render();return;}
+ if(action==='business-record-more'){if(recordsState?.kind==='loading')return;recordsState.kind='loading';loadRecords(recordsState,true);render();return;}
+ businessBusy=true;trigger.disabled=true;try{
+ if(action==='business-refresh'){await syncAccount();if(apiSession===session)render();}
+ else if(action==='business-retry-create'&&businessPayment&&!businessPayment.order)await createPayment(businessPayment);
+ else if(action==='business-query'&&businessPayment)await queryPayment(businessPayment,businessEpoch);
+ else if(action==='business-cancel'&&businessPayment?.order){const p=businessPayment;try{const result=await backend('/payments/'+p.order.paymentId+'/cancel',{method:'POST',body:{},login:true,raw:true});await updatePaymentOrder(result,p,session);}catch(e){if(apiSession!==session)return;p.error=e.message;savePayment();await queryPayment(p,businessEpoch);}}
+ else if(action==='business-reset-rejected'&&businessPayment?.creationRejected&&!businessPayment.order){businessPayment=null;savePayment();render();}
+ else if(action==='business-new'&&finalPaymentStates.has(businessPayment?.order?.status)){businessPayment=null;savePayment();render();}
+ }catch(e){if(apiSession===session)apiMessage(e.message);}finally{businessBusy=false;if(trigger.isConnected)trigger.disabled=false;}
+},true);
+const priorBusinessRender=render;
+render=function(){businessEpoch++;clearTimeout(businessTimer);if(!apiSession){walletState={kind:'idle'};merchantState={kind:'idle'};businessPayment=null;recordsState=null;}priorBusinessRender();schedulePayment();};
+window.addEventListener('focus',async()=>{const session=apiSession;if(!session||apiBusy||businessBusy||apiTask)return;if(!['home','card','merchant','merchant-profile','merchant-pending'].includes(route))return;await syncAccount();if(apiSession===session)render();});
+
 render();
