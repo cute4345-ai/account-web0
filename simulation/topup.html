@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-Hant" data-type="software">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="科技金融交易系統專題展示：模擬收款、現金儲值、卡片管理及管理員審核。無實際金流。">
+  <meta name="theme-color" content="#081a26"><meta name="page-type" content="software"><meta name="site-kind" content="software">
+  <title>卡片儲值工作站｜模擬交易</title>
+  <link rel="stylesheet" href="./style.css?v=dark-ui-20261117-r2"><link rel="stylesheet" href="./console-ready.css?v=dark-ui-20261117-r2"><script src="./app.js?v=dark-ui-20261117-r2" defer></script><script src="./console-config.js?v=dark-ui-20261117-r2" defer></script><script src="./console-api.js?v=dark-ui-20261117-r2" defer></script><script src="./kiosk-api.js?v=dark-ui-20261117-r2" defer></script><script src="./console-ready.js?v=dark-ui-20261117-r2" defer></script>
+</head>
+<body data-entry="topup">
+  <a class="skip" href="#content">跳至主要內容</a>
+  <header class="topbar"><a class="brand" href="#topup"><i></i>科技金融交易系統</a><div class="top-tools"><button class="icon-button menu-button" data-action="menu" aria-label="開啟導覽" aria-expanded="false">☰</button><span id="area-name">卡片儲值工作站</span></div></header>
+  <div id="app"></div>
+  <footer class="simulation-tools"><details id="sim-tools"><summary>模擬控制台</summary><div class="tools-body"><p>僅使用虛構資料，不連接 MySQL、金流或讀卡機。資料儲存在此瀏覽器，可隨時重置。</p><label>獨立操作端<select id="mode" disabled><option value="topup">卡片儲值工作站（模擬）</option></select></label><label class="check"><input id="auto-events" type="checkbox" checked>自動模擬讀卡與處理回應</label><div class="actions"><button data-action="load-fixture">載入流程測試資料</button><button data-action="reset-demo">重置為空帳戶</button></div><div id="device-controls"></div><p class="small" id="fixture-note">流程測試：付款人初始 NT$ 1,280，商家收款 300 後餘額 980，再儲值 500 後為 1,480。</p></div></details></footer>
+  <dialog id="dialog" aria-labelledby="dialog-title"></dialog><div id="toast" role="status" aria-live="polite"></div>
+  <noscript>本專題展示需要 JavaScript，請啟用後再操作。</noscript>
+</body></html>

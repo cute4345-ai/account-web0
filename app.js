@@ -1,587 +1,173 @@
 'use strict';
-
-// In-memory UI prototype. No cookies, storage APIs, network or real personal data.
-const main = document.querySelector('#main-content');
-const dialog = document.querySelector('#flow-dialog');
-const loginTemplate = main.innerHTML;
-const demoTools = document.querySelector('#demo-tools');
-const money = n => `NT$ ${Number(n).toLocaleString('en-US')}`;
-const cardNumber = '**** **** **** 4821';
-const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const icon = (name, extra = '') => `<img class="icon ${extra}" src="./assets/icons/${name}.svg" alt="" aria-hidden="true" width="24" height="24">`;
-const screens = [
-  ['login','個人帳戶登入'],['register','註冊'],['register-success','註冊成功'],['register-duplicate','身分證字號重複'],
-  ['recovery','忘記密碼'],['recovery-question','安全問題驗證'],['recovery-password','更新密碼'],['recovery-complete','更新完成'],
-  ['home','主畫面'],['transactions','交易紀錄'],['transaction-search','交易日期查詢'],['home-unbound','主畫面・未綁卡'],
-  ['merchant','商家介面'],['merchant-application','申請商家權限'],['merchant-pending','商家審核中'],['merchant-profile','商家資訊'],
-  ['merchant-receipts','商家收款紀錄'],['card','卡片管理'],['card-password','變更密碼'],['card-password-success','密碼變更成功'],
-  ['card-cancel','遺失註銷'],['card-unbound','尚未綁定卡片'],['card-insert','請插入卡片'],['card-reading','讀卡中'],
-  ['card-bind-confirm','確認綁定卡片'],['card-bind-complete','綁定完成'],['logout','登出確認']
-];
-const personalRows = [
-  ['T0008','小巷書店','2026-11-05',360,'支出'],['T0007','青禾餐坊','2026-11-04',180,'支出'],
-  ['T0006','山光商店','2026-11-03',1200,'收款'],['T0005','晨光咖啡','2026-11-02',260,'支出'],
-  ['T0004','綠野超市','2026-11-01',480,'支出'],['T0003','文心書局','2026-10-31',300,'支出'],
-  ['T0002','日和餐館','2026-10-30',720,'支出'],['T0001','小巷書店','2026-10-29',150,'支出']
-];
-// Keep one consistent data source for the real date filter (the two reference
-// screenshots disagree about T0007's date). All dates are explicit demo data.
-const merchantRows = [['M0012','小巷書店','2026-11-05',360,'收款'],['M0011','青禾餐坊','2026-11-05',180,'收款'],['M0010','日和餐館','2026-11-04',720,'收款']];
-let users, currentKey, authenticated, recovering, recoveryVerified, completion;
-let readingTimer = null, readReady = false, route = 'login', balanceHidden = false;
-let menuOpen = false, sidebarCollapsed = false, pendingFocus = null;
-let dateFilters = {personal:'', merchant:''};
-let payment = null, paymentTimer = null, paymentSequence = 0;
-function clearPayment() { clearTimeout(paymentTimer); paymentTimer=null; payment=null; }
-function resetData() {
-  clearPayment(); paymentSequence=0;
-  users = new Map([['demo',{name:'示範使用者',username:'demo',password:'demo1234',identity:'DEMO-ID-001',question:'我最喜歡的書是什麼？',answer:'小王子',bound:true,merchant:'none',merchantName:'青禾餐坊',phone:'02-0000-0000',sample:true}]]);
-  currentKey = null; authenticated = false; recovering = null; recoveryVerified = false; completion = null;
-  balanceHidden = false; readReady = false; menuOpen = false; dateFilters = {personal:'',merchant:''};
-  clearTimeout(readingTimer); readingTimer = null;
-}
-resetData();
-const user = () => users.get(currentKey);
-// Successful receipts are the shared ledger for the merchant and personal views.
-const accountBalance = () => (user().sample?12580:0)+(user().receipts||[]).reduce((sum,row)=>sum+row[3],0);
-const btn = (text, action, secondary = false, extra = '') => `<button type="button" class="btn${secondary?' secondary':''} ${extra}" data-action="${action}">${text}</button>`;
-const back = () => '<div class="return-link"><a class="text-link" href="#login">返回登入</a></div>';
-const note = (text = '流程示範・僅在本頁暫存，未連接正式服務。') => `<p class="demo-note">${text}</p>`;
-const mark = number => { document.body.dataset.screen = String(number).padStart(2,'0'); };
-function goto(next) { if (location.hash === `#${next}`) render(); else location.hash = next; }
-function errorFor(id, text) {
-  const input = document.getElementById(id), message = document.getElementById(`${id}-error`);
-  input.setAttribute('aria-invalid','true'); input.setAttribute('aria-describedby',message.id);
-  message.textContent = text; message.hidden = false; message.setAttribute('role','alert'); input.focus();
-}
-function field(id, label, type = 'text', autocomplete = 'off', value = '') {
-  const input = `<input id="${id}" name="${id}" type="${type}" autocomplete="${autocomplete}" value="${esc(value)}" ${type==='password'?'placeholder="********"':''} required aria-describedby="${id}-error">`;
-  return `<div class="field"><label for="${id}">${label}</label>${type==='password'?`<div class="password-input">${input}<button type="button" class="password-toggle" aria-label="顯示密碼" aria-controls="${id}" aria-pressed="false"><img class="eye-icon" src="./assets/icons/eye.svg" alt="" aria-hidden="true" width="39" height="30"></button></div>`:input}<p class="error-text" id="${id}-error" hidden></p></div>`;
-}
-function authPanel(title, body, classes='') { main.innerHTML = `<section class="login-panel auth-panel ${classes}" aria-labelledby="page-title"><h1 id="page-title" tabindex="-1">${title}</h1>${body}</section>`; }
-function renderRegister(duplicate=false) {
-  const values = duplicate?['示範姓名','new-demo','','DEMO-ID-001','我最喜歡的書是什麼？','']:['','','','','',''];
-  const fields = [['reg-name','姓名','text','off'],['reg-account','帳號','text','off'],['reg-password','密碼','password','new-password'],['reg-identity','身分證字號','text','off'],['reg-question','自訂安全提示問題','text','off'],['reg-answer','自訂答案','text','off']];
-  authPanel('註冊',`<form id="register-form">${fields.map((f,i)=>field(...f,values[i])).join('')}<button class="btn wide" type="submit">註冊</button>${back()}</form>`,'register-panel');
-  if (duplicate) errorFor('reg-identity','此身分證字號已有帳號');
-}
-function renderRecovery(step) {
-  if (step==='recovery') authPanel('忘記密碼',`<p class="subtitle">請輸入帳號。</p><form id="recovery-form">${field('recovery-account','帳號','text','username')}<button class="btn wide" type="submit">下一步</button><a class="btn secondary wide" href="#login">返回登入</a></form>`,'recovery-panel account-step');
-  else if (step==='recovery-question') authPanel('安全問題驗證',`<form id="answer-form"><div class="question-heading"><span>安全提示問題</span><small>虛構資料</small></div><div class="question-box">${esc(users.get(recovering).question)}</div>${field('recovery-answer','答案')}<button class="btn wide" type="submit">驗證答案</button>${back()}</form>`,'recovery-panel question-step');
-  else authPanel('更新密碼',`<form id="recovery-password-form">${field('new-password','新密碼','password','new-password')}${field('confirm-password','請再次輸入新密碼','password','new-password')}<button class="btn wide" type="submit">確認更新</button>${back()}</form>`,'recovery-panel password-step');
-}
-function renderResult(title, subtitle='', small=false) {
-  main.className='result-main';
-  main.innerHTML=`<div class="result-surface"><section class="login-panel auth-panel result-box ${small?'small':''}" aria-labelledby="page-title"><h1 id="page-title" tabindex="-1">${title}</h1>${subtitle?`<p>${subtitle}</p>`:''}<a class="btn" href="#login">${small?'返回登入':'重新登入'}</a></section></div>`;
-}
-function activeGroup() { return route.startsWith('merchant')?'merchant':route.startsWith('card')?'card':route==='logout'?'logout':'home'; }
-function shell(title, bare=false) {
-  const group=activeGroup(); main.className=`dashboard${sidebarCollapsed?' collapsed':''}`;
-  document.body.classList.toggle('sidebar-collapsed',sidebarCollapsed);
-  main.innerHTML=`<button type="button" class="mobile-menu" data-action="menu" aria-controls="side-nav" aria-expanded="${menuOpen}">${icon('menu')}<span>${title}</span><span>選單</span></button><aside class="sidebar${menuOpen?' is-open':''}" id="side-nav"><nav aria-label="個人帳戶功能">${[['home','home','主畫面'],['merchant','store','商家介面'],['card','card','卡片管理'],['logout','logout','登出']].map(([r,i,t])=>`<a href="#${r}" ${group===r?'aria-current="page"':''} aria-label="${t}">${icon(i)}<span class="nav-label">${t}</span></a>`).join('')}</nav></aside><section class="workspace${bare?' bare':''}" aria-labelledby="page-title"><h1 id="page-title" tabindex="-1">${title}</h1><div id="workspace-content"></div></section>`;
-  const toggle=document.createElement('button'); toggle.type='button'; toggle.className='sidebar-toggle'; toggle.dataset.action='sidebar';
-  toggle.innerHTML=`${icon('menu')}<span>${sidebarCollapsed?'展開導覽':'收合導覽'}</span>`; toggle.setAttribute('aria-controls','side-nav'); toggle.setAttribute('aria-expanded',String(!sidebarCollapsed)); document.querySelector('.site-header').append(toggle);
-}
-function workspace(html,demo=true) { const includeNote=demo&&!['transactions','transaction-search','merchant-receipts'].includes(route); document.querySelector('#workspace-content').innerHTML=html+(includeNote?note('虛構資料・流程示範，未連接帳戶、金流或審核服務。'):''); }
-function renderHome() {
-  shell('主畫面');
-  if (!user().bound) { mark(12); workspace('<div class="info-panel notice-panel"><p>尚未綁定卡片，請至卡片管理綁定。</p><a class="btn" href="#card">前往卡片管理</a></div>'); return; }
-  workspace(`<div class="info-panel balance-panel"><div class="balance-card"><h2>卡號</h2><p class="card-number">${cardNumber}</p><p class="card-state">已綁定卡片</p></div><div class="balance-side"><h2>可用餘額</h2><div class="balance-row"><p class="balance-value" id="balance-value">${balanceHidden?'****':money(accountBalance())}</p><button class="btn" data-action="balance" type="button" aria-pressed="${balanceHidden}">${icon(balanceHidden?'eye-off':'eye')}<span>${balanceHidden?'顯示餘額':'隱藏餘額'}</span></button></div></div><a class="btn secondary compact balance-records" href="#transactions">交易紀錄</a></div>`);
-}
-function renderMerchant() {
-  shell('商家介面');
-  if (user().merchant==='none') { mark(13); workspace('<div class="info-panel merchant-unapplied"><h2>尚未申請商家</h2><a href="#merchant-application" class="btn">申請商家權限</a></div>'); }
-  else if (user().merchant==='pending') { mark(15); workspace(`<div class="info-panel notice-panel pending-panel">${icon('clock')}<p>商家權限申請審核中。</p></div>`); }
-  else { mark(16); workspace(`<div class="info-panel profile-panel"><div class="profile-heading"><h2>商家資訊</h2><span class="badge">已註冊</span></div><dl class="data-list"><div><dt>商家名稱</dt><dd>${esc(user().merchantName)}</dd></div><div><dt>電話</dt><dd>${esc(user().phone)}</dd></div></dl><div class="panel-footer"><a href="#merchant-receipts" class="btn compact">收款紀錄</a></div></div>${paymentPanel()}`); }
-}
-function paymentPanel() {
-  const p=payment, stage=p?.stage||'form';
-  const summary=p?`<dl class="payment-summary"><div><dt>付款項目</dt><dd>${esc(p.item)}</dd></div><div><dt>付款金額</dt><dd>${money(p.amount)}</dd></div></dl>`:'';
-  let content='';
-  if(stage==='form') content=`<form id="payment-form"><div class="payment-fields"><div class="field"><label for="payment-amount">付款金額（新台幣）</label><input id="payment-amount" name="amount" type="number" inputmode="numeric" min="1" max="999999999" step="1" value="${p?.amount||''}" required aria-describedby="payment-amount-error"><p class="error-text" id="payment-amount-error" hidden></p></div><div class="field"><label for="payment-item">付款項目</label><input id="payment-item" name="item" maxlength="80" value="${esc(p?.item||'')}" required aria-describedby="payment-item-error"><p class="error-text" id="payment-item-error" hidden></p></div></div><button class="btn" type="submit">開始收款</button></form>`;
-  else if(stage==='waiting') content=`${summary}<div class="payment-status" role="status">${icon('card-reader')}<p>等待付款人插卡</p></div><p class="demo-note">插卡後將自動結帳。尚未連接讀卡機，請使用下方按鈕模擬插卡。</p><div class="actions start">${btn('模擬付款人插卡','payment-insert')}${btn('模擬插卡並付款失敗','payment-insert-fail',true)}${btn('返回修改','payment-edit',true)}${btn('取消收款','payment-cancel',true)}</div>`;
-  else if(stage==='processing') content=`${summary}<div class="payment-status" role="status"><span class="spinner" aria-hidden="true"></span><p>模擬付款處理中，請稍候。</p></div>${btn('取消收款','payment-cancel',true)}`;
-  else if(stage==='success') content=`<p class="payment-status" role="status">模擬付款成功</p>${summary}<p>示範流水號：${esc(p.receipt)}</p><p class="demo-note">已同步更新本次分頁的示範餘額、交易與收款紀錄，未實際扣款或入帳。</p><div class="actions start">${btn('下一筆收款','payment-new')}<a class="btn secondary" href="#merchant-receipts" data-action="payment-receipts">查看收款紀錄</a></div>`;
-  else content=`<p class="payment-status" role="alert">模擬付款失敗，未新增收款紀錄。</p>${summary}<div class="actions start">${btn('重新等待插卡','payment-retry')}${btn('返回修改','payment-edit',true)}${btn('取消收款','payment-cancel',true)}</div>`;
-  return `<section class="info-panel payment-panel" aria-labelledby="payment-title"><h2 id="payment-title">刷卡收款</h2><p class="demo-note payment-demo">流程模擬・未連接讀卡設備或金流</p>${content}</section>`;
-}
-function paymentAction(action) {
-  if(!authenticated||user()?.merchant!=='approved'||!['merchant','merchant-profile'].includes(route))return;
-  if(action==='receipts'){dateFilters.merchant='';return;}
-  if(action==='new'||action==='cancel'){clearPayment();render();document.querySelector('#payment-amount')?.focus();return;}
-  if(!payment||payment.owner!==currentKey)return;
-  const stage=payment.stage;
-  if(action==='edit'&&['waiting','failed'].includes(stage))payment.stage='form';
-  else if(action==='retry'&&stage==='failed')payment.stage='waiting';
-  else if(['insert','insert-fail'].includes(action)&&stage==='waiting'){
-    payment.stage='processing';const pending=payment;
-    paymentTimer=setTimeout(()=>{
-      paymentTimer=null;
-      if(payment!==pending||!authenticated||currentKey!==pending.owner||user()?.merchant!=='approved'||!['merchant','merchant-profile'].includes(route))return;
-      if(action==='insert-fail'){pending.stage='failed';render();document.querySelector('#payment-title')?.scrollIntoView({block:'nearest'});return;}
-      const now=new Date(), date=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
-      pending.receipt=`SIM-${String(++paymentSequence).padStart(4,'0')}`;
-      (user().receipts??=[]).unshift([pending.receipt,'示範付款人',date,pending.amount,'收款',pending.item]);
-      pending.stage='success';render();document.querySelector('#payment-title')?.scrollIntoView({block:'nearest'});
-    },1200);
-  }else return;
-  render();document.querySelector('#payment-title')?.scrollIntoView({block:'nearest'});
-}
-function formatDate(v) { const [y,m,d]=v.split('-'); return `${y}年${Number(m)}月${Number(d)}日`; }
-function renderRecords(merchant=false, search=false) {
-  const selected=search?dateFilters[merchant?'merchant':'personal']:'';
-  const receipts=user().receipts||[];
-  let rows=merchant?[...receipts,...(user().sample?merchantRows:[])]:[...receipts.map(r=>[r[0],`${r[1]}・${r[5]}`,r[2],r[3],r[4]]),...(user().sample?personalRows:[])];
-  if (selected) rows=rows.filter(r=>r[2]===selected);
-  const headers=merchant?['流水號','付款人','付款項目','交易日期','交易金額','交易狀態']:['流水號','交易對象','交易日期','交易金額','交易狀態'];
-  shell(merchant?'商家收款紀錄':'交易紀錄'); document.querySelector('.workspace > h1').remove();
-  workspace(`<div class="records-heading"><div><h1 id="page-title" tabindex="-1">${merchant?'商家收款紀錄':'交易紀錄'}</h1><p>虛構資料</p></div>${search?`<button class="text-link" type="button" data-action="focus-date" style="border:0;background:transparent;gap:10px">${icon('search')}查詢日期</button>`:''}</div><div class="records-inner">${search?`<form id="date-form" class="date-filter"><label for="transaction-date">交易日期</label><input id="transaction-date" type="date" name="date" value="${selected}" required><button class="btn" type="submit">查詢</button><button class="btn secondary" type="button" data-action="clear-date">清除日期條件</button></form>`:`<div class="records-tools"><a class="btn" href="#transaction-search">${icon('search')}查詢日期</a></div>`}<div class="table-scroll" tabindex="0" role="region" aria-label="${merchant?'商家收款':'個人交易'}紀錄"><table role="table"><caption>${merchant?'商家收款':'個人交易'}紀錄・虛構資料</caption><thead role="rowgroup"><tr role="row">${headers.map(h=>`<th scope="col" role="columnheader">${h}</th>`).join('')}</tr></thead><tbody role="rowgroup">${rows.length?rows.map(r=>`<tr role="row">${(merchant?[r[0],esc(r[1]),esc(r[5]||'示範款項'),formatDate(r[2]),money(r[3]),r[4]]:[r[0],esc(r[1]),formatDate(r[2]),money(r[3]),r[4]]).map((v,i)=>`<td role="cell" data-label="${headers[i]}">${v}</td>`).join('')}</tr>`).join(''):`<tr class="empty-row"><td colspan="${headers.length}">${selected?'目前沒有符合條件的交易紀錄':'目前沒有交易紀錄'}</td></tr>`}</tbody></table></div>${search?`<p class="filter-status" role="status">${selected?`${formatDate(selected)}，共 ${rows.length} 筆紀錄`:'顯示所有日期的紀錄'}</p>`:''}</div>`);
-}
-function renderCard() {
-  shell('卡片管理');
-  if (!user().bound) { mark(22); workspace('<div class="info-panel notice-panel"><p>尚未綁定卡片</p><a href="#card-insert" class="btn">綁定卡片</a></div>'); }
-  else workspace(`<div class="info-panel"><h2>目前卡片</h2><dl class="data-list card-details"><div><dt>卡號</dt><dd>${cardNumber}</dd></div><div><dt>已綁定卡片</dt><dd>虛構資料</dd></div></dl><div class="actions start"><a class="btn" href="#card-password">變更密碼</a><a class="btn secondary" href="#card-cancel">遺失註銷</a></div></div>`);
-}
-function openModal(html,className='') { dialog.className=`flow-dialog ${className}`; dialog.innerHTML=html; dialog.showModal(); }
-const modalTitle = text => `<h2 id="dialog-title">${text}</h2>`;
-function renderModal() {
-  shell(route.startsWith('merchant')?'商家介面':route==='logout'?'登出':'卡片管理',true); workspace('',false);
-  if (route==='merchant-application') openModal(`${modalTitle('申請商家權限')}<form id="merchant-form"><div class="horizontal-field">${field('merchant-name','商家名稱')}</div><div class="horizontal-field">${field('merchant-phone','電話','tel')}</div><div class="actions"><button class="btn" type="submit">申請</button>${btn('取消','cancel-modal',true)}</div>${note('示範申請不會送交真實審核。')}</form>`,'merchant-modal');
-  else if (route==='card-password') openModal(`${modalTitle('變更密碼')}<form id="card-password-form">${field('old-password','舊密碼','password','current-password')}${field('card-new-password','新密碼','password','new-password')}${field('card-confirm-password','請再次輸入新密碼','password','new-password')}<div class="actions"><button class="btn" type="submit">確認變更</button>${btn('取消','cancel-modal',true)}</div></form>`,'password-modal');
-  else if (route==='card-password-success') openModal(`${modalTitle('密碼變更成功！')}${btn('重新登入','finish-login')}${note('示範密碼已更新，請重新登入。')}`,'success-modal');
-  else if (route==='card-cancel') {
-    openModal(`${modalTitle('遺失註銷')}<div class="confirm-row"><span>卡片帳號</span><strong>${cardNumber}</strong></div><p class="demo-note">虛構資料</p><p class="question">是否註銷此卡片？</p><div class="actions">${btn('確認註銷','cancel-card')}${btn('否','cancel-modal',true)}</div>`);
-    dialog.querySelector('[data-action="cancel-modal"]').focus();
-  } else if (route==='card-insert'||route==='card-reading') {
-    const reading=route==='card-reading';
-    openModal(`${modalTitle('綁定卡片')}${reading?'<div class="spinner" aria-hidden="true"></div>':icon('card-reader','reader-icon')}<p class="question" role="status">${reading?'讀卡中請稍後。':'請插入卡片。'}</p><p class="demo-note">流程預覽・未連接讀卡設備${reading?'。':''}</p>${reading?'':'<button type="button" class="simulate-insert" data-action="simulate-insert">模擬插入示範卡片</button>'}<div class="actions">${btn('取消','cancel-modal',true)}</div>`,reading?'reader-stage':'reader-stage reader-insert');
-    if (reading&&!readingTimer) readingTimer=setTimeout(()=>{readingTimer=null;if(route==='card-reading'&&authenticated){readReady=true;goto('card-bind-confirm');}},3000);
-  } else if (route==='card-bind-confirm') openModal(`${modalTitle('確認綁定卡片')}<div class="confirm-row"><span>卡號</span><strong>${cardNumber}</strong></div><p class="demo-note">虛構資料<br>流程預覽・未連接讀卡設備</p><div class="actions">${btn('確認綁卡','confirm-bind')}${btn('取消','cancel-modal',true)}</div>`);
-  else if (route==='card-bind-complete') openModal(`${modalTitle('綁定完成')}<p>卡片綁定完成，請重新登入。</p>${btn('重新登入','finish-login')}<p class="demo-note">流程預覽・未連接讀卡設備</p>`,'success-modal');
-  else if (route==='logout') {
-    workspace(`<section class="logout-confirm" aria-labelledby="dialog-title">${modalTitle('確定要登出嗎？')}<div class="actions">${btn('是','confirm-logout')}${btn('否','cancel-modal',true)}</div></section>`,false);
+// Standalone teaching simulator. Never imports the live API application.
+const app=document.querySelector('#app'), dialog=document.querySelector('#dialog');
+const KEY='fintech-simulation-v1', VERSION=1;
+const ENTRY=['admin','topup'].includes(document.body.dataset.entry)?document.body.dataset.entry:'user';
+const defaultPage=()=>ENTRY==='admin'?'admin':ENTRY==='topup'?'topup':'login';
+const userPages=['login','register','recovery','home','transactions','card','merchant','logout'];
+function entryPage(route){return ENTRY==='admin'?(adminNav.some(([r])=>r===route)||route==='admin-detail'?route:'admin'):ENTRY==='topup'?'topup':userPages.includes(route)?route:'login';}
+const money=n=>`NT$ ${Number(n).toLocaleString('zh-TW')}`;
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const icon=(name)=>`<img class="icon" src="./assets/icons/${name}.svg" alt="" aria-hidden="true">`;
+const btn=(text,action,primary=false,disabled=false)=>`<button type="button" data-action="${action}" class="${primary?'primary':''}" ${disabled?'disabled':''}>${text}</button>`;
+const link=(text,href,primary=false)=>`<a class="button-link ${primary?'primary':''}" href="#${href}">${text}</a>`;
+const initial=()=>({version:VERSION,users:[{id:'U0001',name:'示範使用者',username:'demo',password:'demo1234',question:'我最喜歡的書？',answer:'小王子',balance:0,bound:false,merchant:'none',store:'',phone:''}],ledger:[],cancellations:[],seq:0});
+let db;
+try{const saved=JSON.parse(localStorage.getItem(KEY));db=saved?.version===VERSION&&Array.isArray(saved.users)&&Array.isArray(saved.ledger)?saved:initial();}catch{db=initial();}
+let current='demo', loggedIn=false, page='login', mode='user', hiddenBalance=false, menuOpen=false, paused=false, search='', date='', type='', period='month', adminSearch='', detailUser='', tx=null, bindStage='', pendingNavigation=null, recoveryUser=null, recoveryStep=0;
+let autoEvents=true, simulatorTimer=null, returnFocus=null, toastTimer;
+const displayedBalances=new Map();
+const user=()=>db.users.find(u=>u.username===current);
+const payer=()=>db.users.find(u=>u.username==='demo');
+const merchant=()=>db.users.find(u=>u.username==='merchant');
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(db));}catch{toast('瀏覽器無法保存資料；本次操作仍可在此分頁使用。');}};
+const time=()=>new Date().toLocaleString('zh-TW',{hour12:false});
+const localDate=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
+const note='<p class="footer-note">專題模擬交易 · 使用虛構資料 · 未連接後端、金流或實體設備</p>';
+function toast(text){const e=document.querySelector('#toast');e.textContent=text;e.classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>e.classList.remove('visible'),4000);}
+function field(id,label,kind='text',value='',attrs=''){return `<div class="form-field"><label for="${id}">${label}</label><input id="${id}" name="${id}" type="${kind}" value="${esc(value)}" required ${attrs}></div>`;}
+function openDialog(title,body,{dark=false}={}){returnFocus=document.activeElement;if(dialog.open)dialog.close();dialog.className=dark?'dark':'';dialog.innerHTML=`<h2 id="dialog-title">${title}</h2>${body}`;dialog.showModal();dialog.querySelector('[data-action="dialog-close"],[data-action="topup-edit"],button,input')?.focus();}
+function closeDialog(){dialog.close();returnFocus?.isConnected&&returnFocus.focus();}
+function navigate(next){next=entryPage(next);if(next===page&&location.hash===`#${next}`){render();return;}location.hash=next;}
+function ledgerFor(who=current){return db.ledger.filter(r=>r.from===who||r.to===who);}
+function totals(who=current){const d=new Date();const rows=ledgerFor(who).filter(r=>period==='all'||r.date.startsWith(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`));return {spent:rows.filter(r=>r.kind==='payment'&&r.from===who).reduce((s,r)=>s+r.amount,0),topup:rows.filter(r=>r.kind==='topup'&&r.to===who).reduce((s,r)=>s+r.amount,0)};}
+function amounts(n){return hiddenBalance?'****':money(n);}
+function loadFixture(){clearTransaction();db=initial();db.users[0]={...db.users[0],balance:1280,bound:true};db.users.push({id:'U0002',name:'青禾餐坊',username:'merchant',password:'merchant1234',question:'商店名稱？',answer:'青禾',balance:0,bound:true,merchant:'approved',store:'青禾餐坊',phone:'示範電話'});save();current='demo';loggedIn=ENTRY==='user';mode=ENTRY;navigate(ENTRY==='user'?'home':defaultPage());toast('已載入虛構流程資料：付款人 1,280 元，商家 0 元。');}
+function clearTransaction(){clearTimeout(simulatorTimer);simulatorTimer=null;tx=null;}
+function header(){const area=mode==='topup'?'卡片儲值':mode==='admin'?'管理員後台':'個人帳戶';document.querySelector('#area-name').textContent=area;document.querySelector('#mode').value=mode;paused=false;document.body.classList.remove('motion-paused');}
+const userNav=[['home','home','主畫面'],['transactions','calendar','交易紀錄'],['card','card','卡片管理'],['merchant','store','商家功能'],['logout','logout','登出']];
+const adminNav=[['admin','home','總覽與使用者'],['admin-review','store','商家審核'],['admin-cancellations','card','卡片註銷紀錄']];
+function shell(){const admin=mode==='admin',nav=admin?adminNav:userNav;app.innerHTML=`<div class="layout ${admin?'admin':''}"><aside class="sidebar ${menuOpen?'open':''}" id="navigation"><h2>${admin?'管理員後台':'個人帳戶'}</h2><nav aria-label="${admin?'管理員':'個人帳戶'}導覽">${nav.map(([r,i,t])=>`<a href="#${r}" class="${page===r||(r==='admin'&&page==='admin-detail')?'active':''}" ${page===r?'aria-current="page"':''}>${icon(i)}<span>${t}</span></a>`).join('')}</nav><img class="sidebar-art" src="./assets/card-scene.svg" alt="" aria-hidden="true"></aside><main class="content" id="content" tabindex="-1"></main></div>`;}
+function render(){header();if(mode==='topup'){renderTopup();}else if(['login','register','recovery'].includes(page)){renderAuth();}else{if(!loggedIn&&mode!=='admin'){page='login';history.replaceState(null,'','#login');renderAuth();}else{if(!document.querySelector('.layout')||Boolean(document.querySelector('.admin'))!==(mode==='admin'))shell();document.querySelectorAll('.sidebar nav a').forEach(a=>{const active=a.hash===`#${page}`||(page==='admin-detail'&&a.hash==='#admin');a.classList.toggle('active',active);if(active)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});document.querySelector('.sidebar').classList.toggle('open',menuOpen);const main=document.querySelector('#content');main.innerHTML=`<div class="page">${renderPage()}</div>`;}}
+  document.body.dataset.page=page;document.body.dataset.stage=tx?.stage||'';document.title=`${({login:'登入',home:'主畫面',transactions:'交易紀錄',card:'卡片管理',merchant:'商家收款',topup:'卡片儲值',admin:'管理員總覽','admin-detail':'使用者完整資料',register:'註冊',recovery:'找回密碼'})[page]||'科技金融交易系統'}｜模擬交易`;
+  deviceControls();document.querySelector('.menu-button').setAttribute('aria-expanded',String(menuOpen));
+  if(page==='home'&&user()){
+    const previous=displayedBalances.get(current),value=user().balance;displayedBalances.set(current,value);
+    if(previous!==undefined&&previous!==value&&!hiddenBalance&&!paused&&!matchMedia('(prefers-reduced-motion: reduce)').matches){document.querySelectorAll('.stat-value').forEach(e=>e.animate([{opacity:.35,transform:'translateY(5px)'},{opacity:1,transform:'translateY(0)'}],{duration:550,easing:'ease-out'}));}
   }
 }
-function preparePreview(number) {
-  currentKey='demo'; authenticated=number>=9; completion=null;
-  user().bound=![12,22,23,24,25].includes(number);
-  user().merchant=number===15?'pending':[16,17].includes(number)?'approved':'none';
-  user().merchantName='青禾餐坊';user().phone='02-0000-0000';
-  if ([6,7,8].includes(number)) {recovering='demo';recoveryVerified=number>=7;}
-  if(number===3)completion='register'; if(number===8)completion='recovery';
-  if(number===20){completion='password';authenticated=false;} if(number===26){completion='bind';authenticated=false;}
-  if(number===25)readReady=true;
-  if(number===11)dateFilters.personal='2026-11-05'; if(number===17)dateFilters.merchant='2026-11-05';
+function renderAuth(){app.innerHTML=`<main class="login-page" id="content"><div class="login-art"><img src="./assets/card-scene.svg" alt="懸浮晶片卡與青藍感應平台"></div><section class="auth-panel ${page==='register'?'compact':''}" aria-labelledby="page-title">${authContent()}</section></main>`;}
+function authContent(){if(page==='register')return `<h1 id="page-title">建立示範帳戶</h1><form id="register-form">${field('name','姓名')}${field('username','帳號','text','','autocomplete="username" minlength="3" maxlength="30"')}${field('password','密碼','password','','minlength="6" autocomplete="new-password"')}${field('question','安全問題')}${field('answer','安全問題答案')}<button class="primary wide">註冊</button><p id="form-error" class="error-message" role="alert"></p></form><p>${link('返回登入','login')}</p><p class="small">只填寫虛構資料，不建立真實帳戶。</p>`;
+  if(page==='recovery'){const stages=[`${field('username','帳號')}`,`<p>${esc(recoveryUser?.question)}</p>${field('answer','安全問題答案')}`,`${field('password','新密碼','password','','minlength="6" autocomplete="new-password"')}`];return `<h1 id="page-title">找回密碼</h1><form id="recovery-form">${stages[recoveryStep]}<button class="primary wide">${recoveryStep===2?'更新密碼':'下一步'}</button><p id="form-error" class="error-message" role="alert"></p></form><p>${link('返回登入','login')}</p>`;}
+  return `<h1 id="page-title">登入</h1><form id="login-form">${field('username','帳號','text','','placeholder="請輸入帳號" autocomplete="username"')}<div class="form-field"><label for="password">密碼</label><div class="password-wrap"><input id="password" type="password" placeholder="請輸入密碼" required autocomplete="current-password"><button type="button" data-action="password-eye" aria-label="顯示密碼" aria-pressed="false">${icon('eye')}</button></div></div><button class="primary wide">登入</button><p id="form-error" class="error-message" role="alert"></p></form><div class="actions">${link('註冊','register')}${link('忘記密碼','recovery')}</div><p class="small">展示帳號 demo / demo1234。左下控制台可載入流程測試資料。</p>`;
 }
-function render() {
-  if(dialog.open)dialog.close();
-  const hash=location.hash.slice(1)||'login', preview=/^preview\/(\d{2})$/.exec(hash);
-  if(preview){const n=Number(preview[1]);if(n<1||n>screens.length){goto('login');return;}preparePreview(n);route=screens[n-1][0];history.replaceState(null,'',`#${route}`);}else route=hash;
-  const index=screens.findIndex(([key])=>key===route); if(index<0){goto('login');return;}
-  if(!['merchant','merchant-profile'].includes(route)||!authenticated||user()?.merchant!=='approved')clearPayment();
-  if(route!=='card-reading'){clearTimeout(readingTimer);readingTimer=null;}
-  if(route==='login'){authenticated=false;currentKey=null;completion=null;recovering=null;recoveryVerified=false;readReady=false;}
-  const resultAllowed=(route==='card-password-success'&&completion==='password')||(route==='card-bind-complete'&&completion==='bind');
-  if(index>=8&&!authenticated&&!resultAllowed){goto('login');return;}
-  if(route==='register-success'&&completion!=='register'){goto('register');return;}
-  if(route==='recovery-complete'&&completion!=='recovery'){goto('recovery');return;}
-  if(route==='recovery-question'&&!recovering){goto('recovery');return;}
-  if(route==='recovery-password'&&(!recovering||!recoveryVerified)){goto('recovery');return;}
-  if(route==='card-bind-confirm'&&!readReady){goto('card-insert');return;}
-  if(index>=8){
-    if(route==='merchant-receipts'&&user().merchant!=='approved'){goto('merchant');return;}
-    if(route==='merchant-application'&&!['none','rejected'].includes(user().merchant)){goto('merchant');return;}
-    if(['card-password','card-cancel'].includes(route)&&!user().bound){goto('card');return;}
-    if(['card-insert','card-reading','card-bind-confirm'].includes(route)&&user().bound){goto('card');return;}
-  }
-  main.className='';document.body.classList.remove('sidebar-collapsed');document.querySelector('.sidebar-toggle')?.remove();mark(index+1);
-  if(route==='login'){main.innerHTML=loginTemplate;main.querySelector('[type="submit"]').disabled=false;}
-  else if(route==='register'||route==='register-duplicate')renderRegister(route.endsWith('duplicate'));
-  else if(route==='register-success')renderResult('註冊成功','請重新登入',true);
-  else if(['recovery','recovery-question','recovery-password'].includes(route))renderRecovery(route);
-  else if(route==='recovery-complete')renderResult('更新完成！請重新登入！');
-  else if(route==='home'||route==='home-unbound')renderHome();
-  else if(route==='transactions'||route==='transaction-search')renderRecords(false,route==='transaction-search');
-  else if(['merchant','merchant-pending','merchant-profile'].includes(route))renderMerchant();
-  else if(route==='merchant-receipts')renderRecords(true,true);
-  else if(route==='card'||route==='card-unbound')renderCard();
-  else renderModal();
-  document.title=`${screens[Number(document.body.dataset.screen)-1][1]}｜個人帳戶`;
-  document.querySelector('#preview-screen').value='';
-  if(!dialog.open){const heading=main.querySelector('h1');const target=pendingFocus?document.querySelector(pendingFocus):null;pendingFocus=null;if(target)target.focus({preventScroll:true});else if(heading&&route!=='register-duplicate'){heading.tabIndex=-1;heading.focus({preventScroll:true});}scrollTo(0,0);}
+function renderPage(){switch(page){case'home':return homePage();case'transactions':return recordsPage();case'card':return cardPage();case'merchant':return merchantPage();case'logout':return `<h1>登出</h1><section class="panel"><h2>確定要登出嗎？</h2><p>示範資料會保留在此瀏覽器。你也可以直接切換其他功能。</p><div class="actions">${btn('是，登出','logout-confirm',true)}${link('否，返回主畫面','home')}</div></section>${note}`;case'admin':case'admin-review':return adminPage();case'admin-detail':return adminDetail();case'admin-cancellations':return `<h1>卡片註銷紀錄</h1>${cancellationTable()}${note}`;default:return `<h1>找不到頁面</h1>${link('返回主畫面','home')}`;}}
+function homePage(){const t=totals(),rows=ledgerFor().slice(0,4),has=rows.length>0;return `<div class="heading-row"><h1>主畫面</h1><select id="period" aria-label="統計期間"><option value="month" ${period==='month'?'selected':''}>本月</option><option value="all" ${period==='all'?'selected':''}>全部期間</option></select></div><div class="stats"><section class="stat"><h2>可用餘額</h2><div class="balance-line"><strong id="balance-value" class="stat-value">${amounts(user().balance)}</strong><button data-action="balance" aria-pressed="${hiddenBalance}">${icon(hiddenBalance?'eye-off':'eye')}${hiddenBalance?'顯示餘額':'隱藏餘額'}</button></div></section><section class="stat"><h2>${period==='all'?'累計':'本月'}消費</h2><strong class="stat-value">${amounts(t.spent)}</strong></section><section class="stat"><h2>${period==='all'?'累計':'本月'}儲值</h2><strong class="stat-value">${amounts(t.topup)}</strong></section></div><div class="home-grid"><section class="panel"><h2>${period==='all'?'累計':'本月'}消費／${period==='all'?'累計':'本月'}儲值</h2><div class="chart" role="img" aria-label="${hiddenBalance?'金額已隱藏':`消費 ${t.spent} 元，儲值 ${t.topup} 元，長條從零開始`}">${!t.spent&&!t.topup?'<p class="chart-empty">尚無本月資料</p>':''}${[['消費',t.spent,''],['儲值',t.topup,'topup']].map(([label,v,c])=>`<div class="chart-column"><div class="bar ${c}" style="height:${hiddenBalance?0:Math.round(v/Math.max(t.spent,t.topup,1)*95)}%"></div><div class="chart-label">${period==='all'?'累計':'本月'}${label}<strong>${amounts(v)}</strong></div></div>`).join('')}</div></section><section class="panel"><h2>最近交易</h2>${has?`<ul class="recent-list">${rows.map(r=>`<li><div><strong>${esc(r.item)}</strong><small>${r.date} · ${r.to===current?'收入':'支出'}</small></div><strong class="${r.to===current?'positive':'negative'}">${hiddenBalance?'****':`${r.to===current?'+':'−'}${money(r.amount)}`}</strong></li>`).join('')}</ul>`:`<div class="empty">${icon('calendar')}<span>尚無交易紀錄</span></div>`}${link('查看紀錄','transactions',true)}</section></div>${note}`;}
+function recordsPage(){const rows=ledgerFor().filter(r=>(!date||r.date===date)&&(!type||(type==='expense'?r.from===current:r.to===current))&&(!search||`${r.item} ${r.id} ${r.from} ${r.to}`.toLowerCase().includes(search.toLowerCase())));const headers=['交易編號','付款項目','交易日期','交易金額','交易狀態'];return `<h1>交易紀錄</h1><section class="panel"><form id="filter-form" class="filter-form"><label>交易日期<input type="date" id="date" value="${date}"></label><label>類型<select id="type"><option value="">全部</option><option value="expense" ${type==='expense'?'selected':''}>支出</option><option value="income" ${type==='income'?'selected':''}>收入</option></select></label><div class="actions"><button class="primary">查詢</button>${btn('清除','clear-filter')}</div></form>${table(headers,rows.map(r=>[esc(r.id),esc(r.item),r.date,`${r.to===current?'+':'−'}${money(r.amount)}`,r.kind==='topup'?'儲值':r.to===current?'收款':'支出']))}<p class="small">共 ${rows.length} 筆紀錄 · 只顯示目前帳戶的交易</p></section>${note}`;}
+function table(headers,rows,empty='目前沒有符合條件的資料'){return `<div class="table-wrap"><table><thead><tr>${headers.map(t=>`<th scope="col">${t}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(row=>`<tr>${row.map((v,i)=>`<td data-label="${headers[i]}">${v}</td>`).join('')}</tr>`).join(''):`<tr><td class="table-empty" colspan="${headers.length}">${empty}</td></tr>`}</tbody></table></div>`;}
+function summary(rows){return `<dl class="transaction-summary">${rows.map(([k,v])=>`<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}</dl>`;}
+function cardPage(){const u=user();return `<h1>卡片管理</h1><div class="card-grid"><div class="card-visual"><img src="./assets/card-scene.svg" alt="晶片卡與感應平台"></div><section class="panel"><div class="heading-row"><h2>我的卡片</h2><span class="badge ${u.bound?'':'pending'}">${u.bound?'已綁定':'未綁定'}</span></div>${u.bound?`<p class="muted">卡片號碼</p><p class="card-number">•••• •••• •••• 4821</p>${summary([['持卡人',esc(u.name)],['目前餘額',money(u.balance)],['卡片狀態','正常使用']])}<div class="actions">${btn('變更密碼','card-password',true)}${btn('遺失註銷','card-cancel')}</div>`:`<h2>尚未綁定卡片</h2><p class="muted">綁定示範卡片後，即可預覽收款與儲值流程。</p>${btn('綁定卡片','card-bind',true)}`}</section></div>${note}`;}
+const mSteps=['輸入資料','等待插卡','讀取卡片','處理交易','結果／待取卡','下一筆'];
+const tSteps=['開始儲值','等待插卡','讀取卡片','輸入金額','確認加值','加值處理','結果／待取卡','下一筆'];
+function steps(labels,step){return `<ol class="steps" aria-label="交易進度">${labels.map((s,i)=>`<li class="${i+1===step?'current':i+1<step?'done':''}" ${i+1===step?'aria-current="step"':''}><b>${i+1<step?'✓':i+1}</b><span>${s}</span></li>`).join('')}</ol>`;}
+function reader(stage='idle',vertical=false){const inserted=!['idle','waiting','ready'].includes(stage);return `<div class="reader-scene ${stage} ${vertical?'vertical':''}" role="img" aria-label="${inserted?'卡片已插入讀卡機':'讀卡機等待卡片'}"><img src="./assets/${vertical?'topup-reader':'reader'}.svg" alt=""><div class="reader-card ${inserted||stage==='waiting'?'':'absent'}"></div></div>`;}
+function merchantPage(){const u=user();if(u.merchant!=='approved')return `<h1>商家功能</h1><section class="panel"><h2>${u.merchant==='pending'?'商家權限申請審核中':u.merchant==='rejected'?'商家申請未通過':'尚未申請商家'}</h2><p class="muted">${u.merchant==='pending'?'請等待管理員審核。模擬管理員可以在控制台切換進入。':'申請商家權限後，通過審核即可進入收款功能。'}</p>${u.merchant==='pending'?'':`<form id="merchant-application">${field('store','商家名稱','text',u.store)}${field('phone','聯絡電話（示範）','text',u.phone)}<button class="primary">${u.merchant==='rejected'?'重新申請':'申請商家權限'}</button></form>`}</section>${note}`;
+  const p=tx?.kind==='payment'?tx:null,stage=p?.stage||'form',step=({form:1,waiting:2,reading:3,processing:4,unknown:4,success:5,ready:6,error:3})[stage];
+  let body='';
+  if(stage==='form')body=`<div class="transaction-grid"><section class="panel"><h2>交易資料</h2><form id="payment-form" class="transaction-form">${field('amount','金額','number',p?.amount||'','min="1" max="9999999" step="1" inputmode="numeric" placeholder="NT$ 0"')}${field('item','付款項目','text',p?.item||'商品付款','maxlength="80"')}<button class="primary wide">開始交易</button><p>按下開始交易後等待插卡</p><p id="form-error" class="error-message" role="alert"></p></form></section>${reader('idle')}</div>`;
+  else if(['success','ready'].includes(stage))body=resultPage(p);
+  else body=`<div class="transaction-grid stage-grid"><section class="panel"><h2>交易摘要</h2>${summary([['金額',money(p.amount)],['付款項目',esc(p.item)]])}</section><section class="reader-panel">${reader(stage)}<div class="reader-caption"><span class="badge">${({waiting:'等待插卡',reading:'讀取卡片',processing:'處理交易',unknown:'確認結果',error:'設備錯誤'})[stage]}</span><h2>${({waiting:'請插入卡片',reading:'正在讀取卡片',processing:'正在處理交易',unknown:'正在確認交易結果',error:'讀卡失敗'})[stage]}</h2><p>${({waiting:'插卡後自動結帳，無須再次確認。',reading:'請勿取出卡片',processing:'請稍候，請勿重複送出。',unknown:'結果尚未確認，不會自動重送。',error:'尚未扣款，請取卡後重試。'})[stage]}</p>${['processing','unknown'].includes(stage)?'<span class="spinner" aria-hidden="true"></span>':''}</div>${stage==='waiting'?`<div class="actions">${btn('模擬付款人插卡','device-insert',true)}${btn('取消交易','transaction-cancel')}</div>`:stage==='unknown'?btn('查詢原交易結果（模擬）','device-resolve',true):stage==='error'?btn('模擬取回卡片','device-remove',true):''}</section></div>`;
+  return `<h1>商家收款</h1>${steps(mSteps,step)}${body}${note}`;
 }
-function cancelModal() {
-  clearTimeout(readingTimer);readingTimer=null;readReady=false;
-  pendingFocus=route==='merchant-application'?'a[href="#merchant-application"]':route==='card-password'?'a[href="#card-password"]':route==='card-cancel'?'a[href="#card-cancel"]':'a[href="#card-insert"]';
-  if(route==='logout')goto('home');
-  else if(['card-password-success','card-bind-complete'].includes(route))goto('login');
-  else goto(route==='merchant-application'?'merchant':'card');
+function newTransaction(kind,amount=0,item=''){clearTimeout(simulatorTimer);tx={kind,id:`SIM-${String(++db.seq).padStart(6,'0')}`,stage:'waiting',amount,item,payer:kind==='payment'?'demo':(payer()?.username||current),recipient:kind==='payment'?current:null,inserted:false,committed:false,time:'',balanceAfter:null};save();}
+function commitTransaction(){if(!tx||tx.committed||!['processing','unknown'].includes(tx.stage))return;const p=db.users.find(u=>u.username===tx.payer),recipient=db.users.find(u=>u.username===tx.recipient);if(!p||!p.bound){transactionError('卡片未綁定或已註銷，沒有完成交易。','error');return;}
+  if(tx.kind==='payment'&&(!recipient||recipient.merchant!=='approved'||recipient===p||p.balance<tx.amount)){transactionError(recipient===p?'不能使用自己的卡片向自己收款。':'餘額不足或商家資格無效，本筆未扣款。','error');return;}
+  if(db.ledger.some(r=>r.id===tx.id)){tx.committed=true;tx.stage='success';render();return;}
+  if(tx.kind==='payment'){p.balance-=tx.amount;recipient.balance+=tx.amount;}else p.balance+=tx.amount;
+  tx.time=time();tx.balanceAfter=p.balance;tx.committed=true;db.ledger.unshift({id:tx.id,kind:tx.kind,from:tx.kind==='payment'?p.username:'模擬現金儲值',to:tx.kind==='payment'?recipient.username:p.username,amount:tx.amount,item:tx.kind==='payment'?tx.item:'現金儲值（模擬）',date:localDate(),time:tx.time});save();tx.stage='success';render();announce('模擬交易成功，請取回卡片。');
 }
-dialog.addEventListener('cancel',e=>{e.preventDefault();cancelModal();});
-dialog.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();cancelModal();}});
-document.addEventListener('input',e=>{
-  const input=e.target;if(!(input instanceof HTMLInputElement))return;
-  input.setCustomValidity('');input.removeAttribute('aria-invalid');const error=document.getElementById(`${input.id}-error`);if(error)error.hidden=true;
-});
-document.addEventListener('submit',e=>{
-  const form=e.target;if(!(form instanceof HTMLFormElement))return;e.preventDefault();
-  const blank=[...form.querySelectorAll('input[required]')].find(input=>!input.value.trim());
-  if(blank){blank.setCustomValidity('請填寫此欄位。');blank.reportValidity();return;}if(!form.reportValidity())return;
-  const val=id=>form.querySelector(`#${id}`).value;
-  if(form.id==='login-form'){
-    const key=val('account').trim(), account=users.get(key);
-    if(!account||account.password!==val('password')){const m=document.querySelector('#form-message');m.textContent='帳號或密碼輸入錯誤，請重新輸入。示範帳號 demo，密碼 demo1234。';m.hidden=false;return;}
-    currentKey=key;authenticated=true;completion=null;balanceHidden=false;menuOpen=false;goto('home');
-  }else if(form.id==='register-form'){
-    const identity=val('reg-identity').trim(), key=val('reg-account').trim();
-    if([...users.values()].some(u=>u.identity.toUpperCase()===identity.toUpperCase())){mark(4);errorFor('reg-identity','此身分證字號已有帳號');return;}
-    if(users.has(key)){errorFor('reg-account','此帳號已被使用，請使用其他帳號。');return;}
-    users.set(key,{name:val('reg-name').trim(),username:key,password:val('reg-password'),identity,question:val('reg-question').trim(),answer:val('reg-answer').trim(),bound:false,merchant:'none',merchantName:'',phone:'',sample:false});
-    completion='register';goto('register-success');
-  }else if(form.id==='recovery-form'){
-    const key=val('recovery-account').trim();if(!users.has(key)){errorFor('recovery-account','找不到此示範帳號，請確認或先註冊。');return;}
-    recovering=key;recoveryVerified=false;goto('recovery-question');
-  }else if(form.id==='answer-form'){
-    if(val('recovery-answer').trim()!==users.get(recovering).answer){errorFor('recovery-answer','答案不正確，請重新輸入。');return;}
-    recoveryVerified=true;goto('recovery-password');
-  }else if(form.id==='recovery-password-form'){
-    if(!recovering||!recoveryVerified){goto('recovery');return;}
-    if(val('new-password')!==val('confirm-password')){errorFor('confirm-password','兩次輸入的新密碼不一致。');return;}
-    users.get(recovering).password=val('new-password');recoveryVerified=false;recovering=null;authenticated=false;completion='recovery';goto('recovery-complete');
-  }else if(form.id==='payment-form'){
-    if(!authenticated||user()?.merchant!=='approved')return;
-    if(payment&&payment.stage!=='form')return;
-    const amount=Number(val('payment-amount')), item=val('payment-item').trim();
-    if(!Number.isSafeInteger(amount)||amount<1||amount>999999999){errorFor('payment-amount','請輸入 1 至 999,999,999 的整數金額。');return;}
-    if(!item||item.length>80){errorFor('payment-item','請輸入 1 至 80 個字的付款項目。');return;}
-    clearPayment();payment={owner:currentKey,amount,item,stage:'waiting'};render();document.querySelector('#payment-title')?.scrollIntoView({block:'nearest'});
-  }else if(form.id==='merchant-form'){
-    user().merchantName=val('merchant-name').trim();user().phone=val('merchant-phone').trim();user().merchant='pending';goto('merchant');
-  }else if(form.id==='card-password-form'){
-    if(user().password!==val('old-password')){errorFor('old-password','舊密碼不正確。');return;}
-    if(val('card-new-password')!==val('card-confirm-password')){errorFor('card-confirm-password','兩次輸入的新密碼不一致。');return;}
-    user().password=val('card-new-password');authenticated=false;completion='password';goto('card-password-success');
-  }else if(form.id==='date-form'){
-    dateFilters[route==='merchant-receipts'?'merchant':'personal']=val('transaction-date');render();document.querySelector('.filter-status')?.scrollIntoView({block:'nearest'});
+function announce(text){const e=document.querySelector('#toast');e.classList.remove('visible');e.textContent=text;}
+function transactionError(message,stage='error'){clearTimeout(simulatorTimer);if(!tx)return;tx.stage=stage;tx.error=message;render();openDialog('設備／交易提示',`<p>${esc(message)}</p><p class="small">關閉視窗不代表撤銷、退款或重新送出。</p>${btn('關閉','dialog-close')}`,{dark:mode==='topup'});}
+function scheduleSimulator(){clearTimeout(simulatorTimer);if(!autoEvents||!tx)return;const id=tx.id,stage=tx.stage;if(!['reading','processing'].includes(stage))return;simulatorTimer=setTimeout(()=>{if(tx?.id!==id||tx.stage!==stage)return;deviceEvent(stage==='reading'?'read':'success');},stage==='reading'?900:1100);}
+function deviceEvent(event){if(bindStage){if(event==='insert'&&bindStage==='waiting'){bindStage='read';openBind();}return;}
+  if(!tx)return;
+  if(event==='insert'&&tx.stage==='waiting'){const p=db.users.find(u=>u.username===tx.payer);tx.inserted=true;if(!p?.bound){transactionError('示範卡片未綁定，請先在個人端綁卡。');return;}tx.stage='reading';render();scheduleSimulator();}
+  else if(event==='read'&&tx.stage==='reading'){clearTimeout(simulatorTimer);tx.stage=tx.kind==='payment'?'processing':'amount';render();if(tx.stage==='amount')document.querySelector('#topup-amount')?.focus();scheduleSimulator();}
+  else if(event==='success'&&tx.stage==='processing'){clearTimeout(simulatorTimer);commitTransaction();}
+  else if(event==='read-error'&&tx.stage==='reading')transactionError('讀卡失敗。請取出卡片，檢查後再試。');
+  else if(event==='disconnect'&&tx.kind==='topup'&&['amount','confirm'].includes(tx.stage)){if(dialog.open)dialog.close();tx.stage='amount';tx.deviceDisconnected=true;render();openDialog('設備連線中斷',`<p>加值尚未送出，金額已保留。請恢復設備連線後再操作。</p>${btn('關閉','dialog-close')}`,{dark:true});}
+  else if(event==='reconnect'&&tx.deviceDisconnected){tx.deviceDisconnected=false;render();toast('模擬設備已重新連線。');}
+  else if(event==='unknown'&&tx.stage==='processing'){clearTimeout(simulatorTimer);tx.stage='unknown';render();}
+  else if(event==='resolve'&&tx.stage==='unknown')commitTransaction();
+  else if(event==='remove'&&tx.inserted&&['success','error','amount','confirm'].includes(tx.stage)){const failed=!tx.committed;clearTimeout(simulatorTimer);tx.inserted=false;if(dialog.open)dialog.close();if(failed){const kind=tx.kind,item=tx.item;clearTransaction();if(kind==='payment')tx={kind:'payment',stage:'form',item};}else tx.stage='ready';render();toast('已收到模擬拔卡事件。');}
+}
+function resultPage(p){const ready=p.stage==='ready',topup=p.kind==='topup';const detail=topup?[['本次儲值金額',money(p.amount)],['儲值後餘額',money(p.balanceAfter)],['交易編號',esc(p.id)]]:[['金額',money(p.amount)],['付款項目',esc(p.item)],['交易編號',esc(p.id)],['時間',esc(p.time)],['卡號末四碼','4821'],['扣款後餘額',money(p.balanceAfter)]];
+  return `<div class="result-grid">${reader(ready?'ready':'success',topup)}<section><div class="transaction-status"><span class="checkmark" aria-hidden="true">✓</span><h2>${ready?'卡片已取出':topup?'加值完成':'交易完成'}</h2></div><p class="take-card">${ready?'可以開始下一筆':'請取回卡片'}</p>${summary(detail)}<div class="actions">${!ready?btn('模擬取回卡片','device-remove',true):''}${btn(topup?'開始下一筆':'下一筆收款','next-transaction',ready,!ready)}</div><p class="small" style="text-align:center">${ready?'下一筆仍需重新開始，不會自動扣款。':'收到拔卡事件後，才會啟用下一筆。'}</p></section></div>`;
+}
+function renderTopup(){page='topup';const p=tx?.kind==='topup'?tx:null,s=p?.stage||'start',step=({start:1,waiting:2,reading:3,amount:4,confirm:5,processing:6,unknown:6,success:7,ready:8,error:4})[s];let content='';if(['success','ready'].includes(s))content=resultPage(p);else{
+  let inner='';if(s==='start')inner=`<h1>開始儲值</h1><p>工作人員操作。</p>${btn('開始儲值','topup-start',true)}`;
+  else if(s==='waiting')inner=`<h1>請插入卡片</h1><p>等待設備偵測卡片後，開始讀取。</p>${btn('模擬插入卡片','device-insert',true)}<p>${btn('取消','transaction-cancel')}</p>`;
+  else if(s==='reading')inner='<h1>正在讀取卡片</h1><p>請勿取出卡片</p><span class="spinner" aria-hidden="true"></span>';
+  else if(['amount','confirm'].includes(s))inner=`<h1>輸入儲值金額</h1><p>請先核對收到的現金。</p><form id="topup-form">${field('topup-amount','儲值金額（NT$）','number',p.amount||'','min="1" max="9999999" step="1" inputmode="numeric"')}<button class="primary wide" ${p.deviceDisconnected?'disabled':''}>確認加值</button><p id="form-error" class="error-message" role="alert"></p></form><p class="small">讀卡完成 · 卡號末四碼 4821 ${p.deviceDisconnected?'· 設備已斷線':''}</p>`;
+  else if(['processing','unknown'].includes(s))inner=`<h1>${s==='unknown'?'正在確認加值結果':'正在加值，請稍候'}</h1>${summary([['本次儲值金額',money(p.amount)]])}<span class="spinner" aria-hidden="true"></span><p>${s==='unknown'?'不會自動重送，請查詢原交易結果。':'請勿取出卡片或重複送出。'}</p>${s==='unknown'?btn('查詢原交易結果（模擬）','device-resolve',true):''}`;
+  else inner=`<h1>讀卡失敗</h1><p>${esc(p.error)}</p>${btn('模擬取回卡片','device-remove',true)}`;
+  content=`<div class="station-grid">${reader(s,true)}<section class="panel">${inner}</section></div>`;
+  }app.innerHTML=`<main class="station" id="content">${steps(tSteps,step)}<div class="page">${content}</div><div class="station-links"><span>模擬現金儲值 · 無實際金流 · 儲值工作站獨立入口</span></div></main>`;
+}
+function adminPage(){let rows=db.users.filter(u=>`${u.name} ${u.username}`.toLowerCase().includes(adminSearch.toLowerCase()));if(page==='admin-review')rows=rows.filter(u=>u.merchant==='pending');return `<h1>${page==='admin-review'?'商家審核':'總覽與使用者'}</h1><div class="stats"><section class="stat"><h2>使用者數</h2><strong class="stat-value">${db.users.length}</strong></section><section class="stat"><h2>綁卡數</h2><strong class="stat-value">${db.users.filter(u=>u.bound).length}</strong></section><section class="stat"><h2>待審核數</h2><strong class="stat-value">${db.users.filter(u=>u.merchant==='pending').length}</strong></section></div><section class="panel"><div class="heading-row"><h2>使用者清單</h2><form id="admin-search" class="actions search"><input id="admin-query" aria-label="搜尋姓名或帳號" placeholder="搜尋姓名或帳號" value="${esc(adminSearch)}"><button class="primary">搜尋</button></form></div>${table(['使用者序號','姓名','帳號','卡片狀態','商家資格','操作'],rows.map(u=>[esc(u.id),esc(u.name),esc(u.username),u.bound?'已綁定':'未綁定',status(u.merchant),`<button data-user="${esc(u.username)}" data-action="admin-detail">查看</button>`]),'尚無使用者資料')}</section>${note}`;}
+function status(s){return ({none:'未申請',pending:'待審核',approved:'已核准',rejected:'未通過'})[s]||s;}
+function cancellationTable(who=''){const rows=db.cancellations.filter(r=>!who||r.user===who);return table(['帳號','卡號末四碼','註銷時間','狀態'],rows.map(r=>[esc(r.user),'4821',esc(r.time),'已註銷']),'尚無註銷紀錄');}
+function adminDetail(){const u=db.users.find(u=>u.username===detailUser);if(!u)return '<h1>請先從使用者清單選擇帳戶</h1>'+link('返回清單','admin');return `<div class="heading-row"><h1>使用者完整資料</h1>${link('‹ 返回清單','admin')}</div><section class="panel"><h2>帳戶摘要</h2><div class="stats">${[['使用者序號',u.id],['姓名',u.name],['帳號',u.username]].map(([k,v])=>`<div class="stat"><h2>${k}</h2><strong class="stat-value" style="font-size:25px">${esc(v)}</strong></div>`).join('')}</div></section><div class="detail-grid"><section class="panel"><h2>卡片狀態</h2>${summary([['卡號末四碼',u.bound?'4821':'****'],['綁卡／註銷狀態',u.bound?'已綁定':'未綁定'],['模擬餘額',money(u.balance)]])}</section><section class="panel"><h2>商家資格</h2>${summary([['申請狀態',status(u.merchant)],['商家名稱',esc(u.store||'—')]])}${u.merchant==='pending'?`<div class="actions">${btn('核准','approve',true)}${btn('駁回','reject')}</div>`:'<p class="small">僅待審核申請可執行核准或駁回。</p>'}</section></div><section class="panel"><h2>註銷紀錄</h2>${cancellationTable(u.username)}</section>${note}`;}
+function deviceControls(){const e=document.querySelector('#device-controls');if(!tx&&!bindStage){e.innerHTML='<p class="small">開始收款、儲值或綁卡後，這裡會出現設備事件控制。</p>';return;}const s=tx?.stage;let controls=[];if(bindStage==='waiting')controls=[['模擬插入示範卡片','device-insert']];else if(tx){if(s==='waiting')controls.push(['模擬插卡','device-insert']);if(s==='reading')controls.push(['模擬讀卡成功','device-read'],['模擬讀卡失敗','device-read-error']);if(s==='processing')controls.push(['模擬處理成功','device-success'],['模擬結果不明','device-unknown']);if(s==='unknown')controls.push(['查詢原交易：成功','device-resolve']);if(['amount','confirm'].includes(s)&&tx.kind==='topup')controls.push([tx.deviceDisconnected?'模擬恢復連線':'模擬設備斷線',tx.deviceDisconnected?'device-reconnect':'device-disconnect']);if(tx.inserted&&['success','error','amount','confirm'].includes(s))controls.push(['模擬拔卡','device-remove']);}
+  e.innerHTML=`<p>模擬設備事件 · ${esc(bindStage||s)}</p><div class="actions">${controls.map(([t,a])=>btn(t,a)).join('')}</div><p class="small">這些按鈕代替設備與後端回應；動畫不會觸發扣款。</p>`;
+}
+function guardedNavigation(next,nextMode=null){if(tx&&['waiting','reading','processing','unknown','amount','confirm','success','error'].includes(tx.stage)){
+    if(tx.stage==='waiting'){pendingNavigation={next,mode:nextMode};openDialog('取消目前交易？',`<p>切換功能會取消等待插卡。尚未送出交易。</p><div class="actions">${btn('否，繼續等待','dialog-close')}${btn('是，取消並切換','leave-transaction',true)}</div>`,{dark:mode==='topup'});return false;}
+    toast(['reading','processing','unknown'].includes(tx.stage)?'正在讀取或確認交易，請先完成目前流程。':'請先取回卡片，再切換功能。');return false;
+  }if(nextMode)mode=nextMode;return true;
+}
+function switchMode(value){if((ENTRY==='user'&&!['user','merchant'].includes(value))||(ENTRY!=='user'&&value!==ENTRY)){toast('此功能使用獨立頁面入口。');document.querySelector('#mode').value=mode;return;}const dest=value==='admin'?'admin':value==='topup'?'topup':value==='merchant'?'merchant':'home';if(!guardedNavigation(dest,value)){document.querySelector('#mode').value=mode;return;}if(value==='merchant'){if(!merchant()){toast('請先載入流程測試資料，或以目前帳戶申請商家。');mode='user';navigate('merchant');return;}current='merchant';loggedIn=true;}else if(value==='user'){current=payer()?.username||db.users[0].username;loggedIn=true;}menuOpen=false;if(tx&&['ready','form'].includes(tx.stage))clearTransaction();navigate(dest);}
+function openBind(){openDialog('綁定卡片',bindStage==='waiting'?`<p>請插入卡片。</p>${reader('waiting')}<div class="actions">${btn('模擬插入卡片','device-insert',true)}${btn('取消','bind-cancel')}</div>`:`<p>已讀取示範卡片 · 末四碼 4821</p><p class="small">確認後僅綁定至目前瀏覽器的示範帳戶。</p><div class="actions">${btn('確認綁卡','bind-confirm',true)}${btn('取消','bind-cancel')}</div>`);}
+function formError(message){const e=document.querySelector('#form-error');if(e)e.textContent=message;else toast(message);}
+function validAmount(v){return Number.isSafeInteger(Number(v))&&Number(v)>0&&Number(v)<=9999999;}
+document.addEventListener('submit',e=>{if(!(e.target instanceof HTMLFormElement))return;e.preventDefault();const form=e.target;if(!form.reportValidity())return;const val=id=>form.querySelector(`#${id}`)?.value.trim()||'';
+  switch(form.id){
+    case'login-form':{const u=db.users.find(u=>u.username===val('username')&&u.password===form.querySelector('#password').value);if(!u){formError('帳號或密碼不正確。展示帳號為 demo / demo1234。');return;}current=u.username;loggedIn=true;mode='user';navigate('home');break;}
+    case'register-form':if(db.users.some(u=>u.username===val('username'))){formError('此示範帳號已存在。');return;}db.users.push({id:`U${String(db.users.length+1).padStart(4,'0')}`,name:val('name'),username:val('username'),password:val('password'),question:val('question'),answer:val('answer'),balance:0,bound:false,merchant:'none',store:'',phone:''});save();navigate('login');toast('示範註冊成功，請登入。');break;
+    case'recovery-form':if(recoveryStep===0){recoveryUser=db.users.find(u=>u.username===val('username'));if(!recoveryUser){formError('找不到此示範帳號。');return;}recoveryStep=1;render();}else if(recoveryStep===1){if(val('answer')!==recoveryUser.answer){formError('安全問題答案不正確。');return;}recoveryStep=2;render();}else{recoveryUser.password=val('password');save();recoveryStep=0;recoveryUser=null;navigate('login');toast('示範密碼已更新。');}break;
+    case'payment-form':{if(user().merchant!=='approved'||(tx&&tx.stage!=='form'))return;if(!validAmount(val('amount'))||!val('item')||val('item').length>80){formError('請輸入有效整數金額與 1–80 字付款項目。');return;}if(user().username==='demo'){formError('請在模擬控制台切換至商家收款，以不同帳戶模擬付款人。');return;}newTransaction('payment',Number(val('amount')),val('item'));render();break;}
+    case'topup-form':if(tx?.stage!=='amount'||tx.deviceDisconnected)return;if(!validAmount(val('topup-amount'))){formError('請輸入 1–9,999,999 的整數金額。');return;}tx.amount=Number(val('topup-amount'));tx.stage='confirm';render();openDialog('確認加值',`<p style="text-align:center">本次儲值金額</p><p class="amount">${money(tx.amount)}</p><p style="text-align:center">請核對金額後再確認送出。</p><div class="actions">${btn('返回修改','topup-edit')}${btn('確認送出','topup-submit',true)}</div>`,{dark:true});break;
+    case'filter-form':date=val('date');type=val('type');render();break;
+    case'admin-search':adminSearch=val('admin-query');render();break;
+    case'merchant-application':if(!val('store')||!val('phone'))return;user().store=val('store');user().phone=val('phone');user().merchant='pending';save();render();break;
+    case'password-form':if(val('old-password')!==user().password){dialog.querySelector('.error-message').textContent='舊密碼不正確。';return;}if(val('new-password')!==val('confirm-password')){dialog.querySelector('.error-message').textContent='新密碼不一致。';return;}user().password=val('new-password');save();closeDialog();toast('示範密碼已更新。');break;
   }
 });
-document.addEventListener('click',e=>{
-  const toggle=e.target.closest('.password-toggle');
-  if(toggle){const input=document.getElementById(toggle.getAttribute('aria-controls')), show=input.type==='password';input.type=show?'text':'password';toggle.setAttribute('aria-pressed',String(show));toggle.setAttribute('aria-label',show?'隱藏密碼':'顯示密碼');toggle.querySelector('.eye-icon').src=`./assets/icons/${show?'eye-off':'eye'}.svg`;return;}
-  const nav=e.target.closest('.sidebar a');if(nav)menuOpen=false;
-  const trigger=e.target.closest('[data-action]');if(!trigger)return;
-  if(trigger.dataset.action.startsWith('payment-')){paymentAction(trigger.dataset.action.slice(8));return;}
-  switch(trigger.dataset.action){
-    case 'demo-login':currentKey='demo';authenticated=true;completion=null;demoTools.open=false;goto('home');break;
-    case 'demo-reset':resetData();demoTools.open=false;goto('login');break;
-    case 'menu':menuOpen=!menuOpen;document.querySelector('.sidebar').classList.toggle('is-open',menuOpen);trigger.setAttribute('aria-expanded',String(menuOpen));break;
-    case 'sidebar':sidebarCollapsed=!sidebarCollapsed;render();document.querySelector('.sidebar-toggle')?.focus();break;
-    case 'balance':balanceHidden=!balanceHidden;document.querySelector('#balance-value').textContent=balanceHidden?'****':money(accountBalance());trigger.innerHTML=`${icon(balanceHidden?'eye-off':'eye')}<span>${balanceHidden?'顯示餘額':'隱藏餘額'}</span>`;trigger.setAttribute('aria-pressed',String(balanceHidden));break;
-    case 'cancel-modal':cancelModal();break;
-    case 'finish-login':goto('login');break;
-    case 'cancel-card':user().bound=false;authenticated=false;goto('login');break;
-    case 'simulate-insert':readReady=false;goto('card-reading');break;
-    case 'confirm-bind':if(!readReady||!authenticated)return;user().bound=true;readReady=false;authenticated=false;completion='bind';goto('card-bind-complete');break;
-    case 'confirm-logout':authenticated=false;currentKey=null;recovering=null;recoveryVerified=false;completion=null;goto('login');break;
-    case 'focus-date':document.querySelector('#transaction-date').focus();break;
-    case 'clear-date':dateFilters[route==='merchant-receipts'?'merchant':'personal']='';render();document.querySelector('#transaction-date').focus();break;
+document.addEventListener('input',e=>{if(tx?.stage==='amount'&&e.target.id==='topup-amount')tx.amount=Number(e.target.value);});
+document.addEventListener('change',e=>{if(e.target.id==='mode')switchMode(e.target.value);if(e.target.id==='auto-events'){autoEvents=e.target.checked;scheduleSimulator();}if(e.target.id==='period'){period=e.target.value;render();}});
+document.addEventListener('click',e=>{const a=e.target.closest('a[href^="#"]');if(a){const next=a.hash.slice(1);if(!next||a.classList.contains('skip'))return;e.preventDefault();const nextMode=next==='home'&&mode==='topup'?'user':null;if(!guardedNavigation(next,nextMode))return;if(tx&&['ready','form'].includes(tx.stage))clearTransaction();menuOpen=false;navigate(next);return;}
+  const b=e.target.closest('[data-action]');if(!b||b.disabled)return;const action=b.dataset.action;
+  if(action.startsWith('device-')){deviceEvent(action.slice(7));return;}
+  switch(action){
+    case'menu':menuOpen=!menuOpen;document.querySelector('.sidebar')?.classList.toggle('open',menuOpen);b.setAttribute('aria-expanded',String(menuOpen));break;
+    case'motion':paused=false;header();break;
+    case'load-fixture':if(tx&&tx.stage!=='ready'){toast('請先完成目前交易並取卡，或取消尚未插卡的交易。');return;}loadFixture();break;
+    case'reset-demo':openDialog('重置模擬資料？',`<p>將清除所有本機示範交易、申請與帳戶，回到空帳戶。</p><div class="actions">${btn('取消','dialog-close')}${btn('確定重置','reset-confirm',true)}</div>`);break;
+    case'reset-confirm':clearTransaction();bindStage='';db=initial();save();current='demo';mode=ENTRY;loggedIn=false;hiddenBalance=false;closeDialog();navigate(defaultPage());break;
+    case'password-eye':{const input=document.querySelector('#password'),show=input.type==='password';input.type=show?'text':'password';b.setAttribute('aria-pressed',String(show));b.setAttribute('aria-label',show?'隱藏密碼':'顯示密碼');b.innerHTML=icon(show?'eye-off':'eye');break;}
+    case'balance':hiddenBalance=!hiddenBalance;render();break;
+    case'logout-confirm':loggedIn=false;hiddenBalance=false;navigate('login');break;
+    case'clear-filter':date='';type='';search='';render();break;
+    case'card-bind':bindStage='waiting';openBind();deviceControls();break;
+    case'bind-cancel':bindStage='';closeDialog();deviceControls();break;
+    case'bind-confirm':if(bindStage!=='read')return;user().bound=true;bindStage='';save();closeDialog();render();toast('示範卡片已綁定。');break;
+    case'card-password':openDialog('變更密碼',`<form id="password-form">${field('old-password','舊密碼','password')}${field('new-password','新密碼','password','','minlength="6"')}${field('confirm-password','再次輸入新密碼','password')}<p class="error-message" role="alert"></p><div class="actions">${btn('取消','dialog-close')}<button class="primary">確認變更</button></div></form>`);break;
+    case'card-cancel':openDialog('遺失註銷',`<p>卡號末四碼 4821。註銷後不可使用這張示範卡進行收款或儲值。</p><div class="actions">${btn('否，保留卡片','dialog-close')}${btn('確認註銷','card-cancel-confirm',true)}</div>`);break;
+    case'card-cancel-confirm':if(user().bound){user().bound=false;db.cancellations.unshift({user:current,time:time()});save();}closeDialog();render();break;
+    case'topup-start':if(tx)return;newTransaction('topup');render();break;
+    case'topup-edit':if(tx?.stage==='confirm'){tx.stage='amount';closeDialog();render();document.querySelector('#topup-amount').focus();}break;
+    case'topup-submit':if(tx?.stage!=='confirm'||tx.deviceDisconnected||!tx.inserted)return;closeDialog();tx.stage='processing';render();scheduleSimulator();break;
+    case'transaction-cancel':if(tx?.stage==='waiting'){clearTransaction();render();}break;
+    case'next-transaction':if(tx?.stage!=='ready'||tx.inserted)return;{const kind=tx.kind,item=tx.item;clearTransaction();if(kind==='payment')tx={kind,stage:'form',item};render();}break;
+    case'leave-transaction':if(!pendingNavigation)return;{const n=pendingNavigation;pendingNavigation=null;clearTransaction();closeDialog();if(n.mode){switchMode(n.mode);}else navigate(n.next);}break;
+    case'dialog-close':if(tx?.stage==='confirm'){tx.stage='amount';render();}if(bindStage){bindStage='';deviceControls();}closeDialog();break;
+    case'admin-detail':detailUser=b.dataset.user;navigate('admin-detail');break;
+    case'approve':case'reject':if(mode==='admin'){const u=db.users.find(u=>u.username===detailUser);if(u?.merchant==='pending'){u.merchant=action==='approve'?'approved':'rejected';save();render();toast(action==='approve'?'示範商家已核准。':'示範申請已駁回。');}}break;
   }
 });
-const previewSelect=document.querySelector('#preview-screen');
-screens.forEach(([,title],i)=>{const option=document.createElement('option');option.value=String(i+1).padStart(2,'0');option.textContent=`${option.value} · ${title}`;previewSelect.append(option);});
-previewSelect.addEventListener('change',()=>{if(previewSelect.value){const n=previewSelect.value;demoTools.open=false;goto(`preview/${n}`);}});
-document.addEventListener('keydown',e=>{if(e.key==='Escape'){demoTools.open=false;if(menuOpen&&!dialog.open){menuOpen=false;document.querySelector('.sidebar')?.classList.remove('is-open');document.querySelector('.mobile-menu')?.setAttribute('aria-expanded','false');document.querySelector('.mobile-menu')?.focus();}}});
-window.addEventListener('hashchange',()=>render());
-// Appended to the original app.js at build time. Original visual components remain.
-const API_BASE='https://ips-totals-custom-feature.trycloudflare.com/api/v1';
-let apiSession=null,apiTask=null,apiEpoch=0,apiPollTimer=null,apiBusy=false,apiNotice='';
-const originalRender=render,originalModal=renderModal,originalRegister=renderRegister;
-async function backend(path,{method='GET',body,login=false,raw=false,headers:extraHeaders={}}={}){
- const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
- try{const headers={Accept:'application/json',...extraHeaders};if(body)headers['Content-Type']='application/json';if(login){if(!apiSession)throw Error('請先登入');headers.Authorization=`Bearer ${apiSession.accessToken}`;}
- const response=await fetch(API_BASE+path,{method,headers,body:body?JSON.stringify(body):undefined,signal:controller.signal,cache:'no-store',credentials:'omit',redirect:'error'});
- if(response.status===204&&response.ok)return null;const result=await response.json().catch(()=>{throw Error('後端沒有回傳有效JSON');});if(!response.ok){const err=Error(result.error?.message||result.error?.code||`HTTP ${response.status}`);err.code=result.error?.code;err.status=response.status;throw err;}
- if(raw)return result;if(!Object.hasOwn(result,'data'))throw Error('後端回應缺少data欄位');return result.data;
- }catch(e){if(e.name==='AbortError'||e instanceof TypeError){const error=Error('連線中斷，結果尚未確認。請先核對後端結果，勿重複提交。');error.uncertain=true;throw error;}throw e;}finally{clearTimeout(timeout);}
-}
-function apiMessage(text){apiNotice=text;let target=document.querySelector('#api-status');if(!target){target=document.createElement('p');target.id='api-status';target.className='error-text';target.setAttribute('role','status');target.setAttribute('aria-live','polite');(dialog.open?dialog:main.querySelector('.login-panel')||main).append(target);}target.textContent=text;}
-function clearApiTask(){apiEpoch++;clearTimeout(apiPollTimer);apiTask=null;readReady=false;}
-renderRegister=function(){originalRegister(false);const form=document.querySelector('#register-form');form.querySelector('#reg-password').closest('.field').insertAdjacentHTML('afterend',field('reg-confirm','確認密碼','password','new-password'));form.querySelector('#reg-password').minLength=12;form.querySelector('#reg-password').maxLength=128;form.querySelector('#reg-confirm').minLength=12;form.querySelector('#reg-account').pattern='[A-Za-z0-9_]{3,50}';};
-renderHome=function(){shell('主畫面');workspace(`<div class="info-panel notice-panel"><h2>${esc(user().name)}</h2><p>帳號：${esc(user().username)}</p>${user().bound?`<p>本次已確認綁定卡號：${esc(user().liveCardNumber)}</p>`:'<p>登入成功。既有卡片狀態尚未透過查詢API取得，請依實際帳號情況操作。</p>'}<a class="btn" href="#card">前往卡片管理</a></div>`,false);};
-renderCard=function(){shell('卡片管理');workspace(user().bound?`<div class="info-panel"><h2>目前卡片</h2><dl class="data-list card-details"><div><dt>卡號</dt><dd>${esc(user().liveCardNumber)}</dd></div><div><dt>公鑰指紋</dt><dd style="overflow-wrap:anywhere">${esc(user().liveFingerprint)}</dd></div></dl><p>以上為本次後端成功綁卡回應。</p></div>`:'<div class="info-panel notice-panel"><p>建立綁卡任務後，請將任務編號交給本機讀卡程式。</p><a href="#card-insert" class="btn">綁定卡片</a></div>',false);};
-function taskMarkup(){if(!apiTask)return '<p class="question">請先建立綁卡任務，再插入實體卡。</p>'+btn('建立綁卡任務','api-create-task');
- return `<div class="field"><label for="bind-request">讀卡任務編號（請保密）</label><textarea id="bind-request" readonly rows="3" style="width:100%;overflow-wrap:anywhere">${esc(apiTask.requestId)}</textarea></div>${btn('複製任務編號','api-copy-task',true)}<p class="demo-note">請貼到讀卡程式「註冊綁卡回報」。<br>期限：${esc(apiTask.expiresAt)}</p><p class="question" role="status">${apiTask.status==='READY'?'實體卡已回報，請核對卡號。':'等待讀卡程式回報實體卡…'}</p>`;
-}
-renderModal=function(){
- if(['card-insert','card-reading'].includes(route)){shell('卡片管理',true);workspace('',false);openModal(`${modalTitle('綁定卡片')}${icon('card-reader','reader-icon')}${taskMarkup()}<div class="actions">${btn('取消','cancel-modal',true)}</div>`,'reader-stage reader-insert');return;}
- if(route==='card-bind-confirm'){shell('卡片管理',true);workspace('',false);openModal(`${modalTitle('確認綁定卡片')}<div class="confirm-row"><span>卡號</span><strong>${esc(apiTask?.cardNumber)}</strong></div><p>請確認這是你剛插入的卡片。</p><div class="actions">${btn('確認綁卡','confirm-bind')}${btn('取消','cancel-modal',true)}</div>`);return;}
- if(route==='card-bind-complete'){shell('卡片管理',true);workspace('',false);openModal(`${modalTitle('綁定完成')}<p>後端已確認卡片與公鑰綁定成功。</p><p>卡號：${esc(user()?.liveCardNumber)}</p><a class="btn" href="#card">查看卡片</a>`,'success-modal');return;}
- originalModal();
-};
-render=function(){apiEpoch++;clearTimeout(apiPollTimer);apiPollTimer=null;apiNotice='';
- const next=location.hash.slice(1)||'login';
- if(next.startsWith('preview/')){goto('login');return;}
- if(next==='login'){apiSession=null;clearApiTask();}
- const supported=['login','register','register-success','home','home-unbound','card','card-unbound','card-insert','card-reading','card-bind-confirm','card-bind-complete','logout','merchant','merchant-application','merchant-pending','merchant-profile','merchant-receipts','transactions','transaction-search'];
- if(!supported.includes(next)){if(dialog.open)dialog.close();main.className='';panelUnavailable(next);return;}
- originalRender();
- if(['card-insert','card-reading'].includes(route)&&apiTask&&apiTask.status==='WAITING')schedulePoll(apiEpoch);
-};
-function panelUnavailable(next){if(apiSession){route=next;shell('功能串接中');workspace('<div class="info-panel notice-panel"><p>目前先完成註冊、登入與實體卡綁定；此功能尚未串接後端。</p><a class="btn" href="#home">返回主畫面</a></div>',false);}else{authPanel('功能串接中','<p>此功能尚未串接後端。</p>'+back());}}
-function schedulePoll(epoch){apiPollTimer=setTimeout(()=>pollTask(epoch),1000);}
-async function pollTask(epoch){if(epoch!==apiEpoch||!apiTask||!apiSession)return;const task=apiTask;
- try{if(Date.now()>=Date.parse(task.expiresAt))throw Error('讀卡任務已到期，請重新建立。');const result=await backend('/card-reads/'+encodeURIComponent(task.requestId));if(epoch!==apiEpoch||apiTask!==task)return;
- if(result.requestId!==task.requestId||result.purpose!=='BIND')throw Error('讀卡任務不符');
- if(result.status==='READY'){if(!result.cardReadToken||!result.cardNumber)throw Error('缺少讀卡憑證或卡號');Object.assign(task,result);readReady=true;goto('card-bind-confirm');return;}
- if(result.status!=='WAITING')throw Error('讀卡狀態不符');schedulePoll(epoch);
- }catch(e){if(epoch!==apiEpoch)return;apiMessage(e.message);if(e.uncertain){apiPollTimer=setTimeout(()=>pollTask(epoch),3000);return;}clearApiTask();dialog.querySelector('.question')?.remove();const refresh=document.createElement('button');refresh.type='button';refresh.className='btn';refresh.dataset.action='api-create-task';refresh.textContent='重新建立綁卡任務';dialog.append(refresh);}}
-document.addEventListener('submit',async e=>{
- const form=e.target;if(['account-password-form','record-date-form'].includes(form.id)){e.preventDefault();e.stopImmediatePropagation();await handleUserSubmit(form);return;}if(['recovery-form','answer-form','recovery-password-form'].includes(form.id)){e.preventDefault();e.stopImmediatePropagation();await handleRecoverySubmit(form);return;}if(['merchant-form','payment-form'].includes(form.id)){e.preventDefault();e.stopImmediatePropagation();await handleBusinessSubmit(form);return;}if(!['login-form','register-form'].includes(form.id)){e.preventDefault();e.stopImmediatePropagation();return;}e.preventDefault();e.stopImmediatePropagation();if(apiBusy||!form.reportValidity())return;
- const val=id=>form.querySelector('#'+id).value;let body;
- if(form.id==='register-form'){body={fullName:val('reg-name').trim(),username:val('reg-account').trim(),password:val('reg-password'),confirmPassword:val('reg-confirm'),nationalId:val('reg-identity').trim(),securityQuestion:val('reg-question').trim(),securityAnswer:val('reg-answer').trim()};if(body.password!==body.confirmPassword){errorFor('reg-confirm','兩次密碼不一致');return;}}
- else body={username:val('account').trim(),password:val('password')};
- apiBusy=true;const epoch=apiEpoch;const button=form.querySelector('[type="submit"]');button.disabled=true;apiMessage('正在連線後端…');
- try{const result=await backend(form.id==='register-form'?'/auth/register':'/auth/login',{method:'POST',body});if(epoch!==apiEpoch)return;
- if(form.id==='register-form'){form.reset();completion='register';goto('register-success');}
- else{if(!result.accessToken||!result.user)throw Error('登入回應不完整');apiSession=result;users=new Map();currentKey=result.user.username;users.set(currentKey,{name:result.user.fullName,username:currentKey,bound:null,merchant:'unknown',sample:false});authenticated=true;completion=null;clearApiTask();recordsState=null;restorePayment();await syncAccount();if(apiSession!==result)return;goto('home');}}
- catch(e){if(epoch===apiEpoch)apiMessage(e.message);}finally{apiBusy=false;if(button.isConnected)button.disabled=false;}
-},true);
-document.addEventListener('click',async e=>{
- const trigger=e.target.closest('[data-action]');if(!trigger)return;const action=trigger.dataset.action;if(['user-revoke','confirm-logout'].includes(action)){e.preventDefault();e.stopImmediatePropagation();await handleUserClick(action);return;}
- if(['cancel-modal','confirm-logout'].includes(action)){clearApiTask();if(action==='confirm-logout')apiSession=null;return;}
- if(!['api-create-task','api-copy-task','confirm-bind','simulate-insert','demo-login','demo-reset'].includes(action))return;
- e.preventDefault();e.stopImmediatePropagation();
- if(action==='api-copy-task'){try{await navigator.clipboard.writeText(apiTask.requestId);apiMessage('已複製，請貼到讀卡程式。');}catch{dialog.querySelector('#bind-request')?.select();apiMessage('請手動複製選取的任務編號。');}return;}
- if(!['api-create-task','confirm-bind'].includes(action)||apiBusy||!apiSession)return;
- if(action==='api-create-task'&&walletState.kind==='ready'&&walletState.value.replacementRequired){apiMessage('此帳號需由管理員補卡，不能一般綁卡。');return;}apiBusy=true;trigger.disabled=true;const epoch=apiEpoch;
- try{if(action==='api-create-task'){const result=await backend('/card-reads',{method:'POST',body:{purpose:'BIND'},login:true});if(epoch!==apiEpoch)return;if(!result.requestId||result.purpose!=='BIND'||result.status!=='WAITING'||!Number.isFinite(Date.parse(result.expiresAt)))throw Error('後端任務格式不符');apiTask=result;goto('card-reading');}
- else{if(!apiTask?.cardReadToken)throw Error('尚未取得讀卡憑證');const task=apiTask;const result=await backend('/me/cards/bind',{method:'POST',body:{cardReadToken:task.cardReadToken},login:true});if(epoch!==apiEpoch)return;
- if(!result.card||!result.signingKey||result.card.cardNumber!==task.cardNumber)throw Error('回應資料不完整，請先確認後端是否已綁定');applyWallet({...result.wallet,card:result.card});user().liveFingerprint=result.signingKey.fingerprint;clearApiTask();completion='bind';goto('card-bind-complete');}}
- catch(e){if(epoch===apiEpoch){apiMessage(e.message);if(action==='confirm-bind'){trigger.disabled=true;apiMessage(e.message+' 請先核對後端結果再繼續，不直接重送。');}else trigger.disabled=false;}}
- finally{apiBusy=false;}
-},true);
-// Use the original layout, but remove the prototype's seeded identities and preview controls.
-users=new Map();currentKey=null;authenticated=false;if(demoTools)demoTools.hidden=true;
-// Backend contract from message (1).txt. No simulated balances or merchant approvals.
-let walletState={kind:'idle'},merchantState={kind:'idle'},businessPayment=null,businessTimer=null,businessEpoch=0,businessBusy=false,recordsState=null;
-const previousBusinessModal=renderModal;
-renderModal=function(){previousBusinessModal();if(route==='merchant-application'){dialog.querySelectorAll('.demo-note').forEach(n=>n.remove());const m=merchantState.value;if(m){dialog.querySelector('#merchant-name').value=m.merchantName||'';dialog.querySelector('#merchant-phone').value=m.phone||'';}}};
-const finalPaymentStates=new Set(['SUCCEEDED','FAILED','CANCELLED','EXPIRED']);
-function minorMoney(v){if(!/^[0-9]+$/.test(String(v)))return '—';const n=BigInt(v);return `NT$ ${(n/100n).toLocaleString('en-US')}.${String(n%100n).padStart(2,'0')}`;}
-function centsFromInput(v){if(!/^\d+(?:\.\d{1,2})?$/.test(v))throw Error('請輸入正確金額，最多兩位小數');const [whole,fraction='']=v.split('.');const n=BigInt(whole)*100n+BigInt(fraction.padEnd(2,'0'));if(n<1n||n>2147483647n)throw Error('金額需介於0.01與21,474,836.47元');return Number(n);}
-function applyWallet(w){if(!w||!/^\d+$/.test(w.balanceMinor)||!Object.hasOwn(w,'card'))throw Error('錢包回應格式不符');if(w.card&&(!w.card.cardNumber||!['ACTIVE','SUSPENDED'].includes(w.card.status)))throw Error('卡片回應格式不符');walletState={kind:'ready',value:w};if(user()){user().bound=w.card!==null;user().liveCardNumber=w.card?.cardNumber;user().cardStatus=w.card?.status;}}
-function applyMerchant(m){if(!m||!['PENDING','APPROVED','REJECTED','SUSPENDED'].includes(m.status))throw Error('商家狀態格式不符');merchantState={kind:'ready',value:m};if(user()){user().merchant=({PENDING:'pending',APPROVED:'approved',REJECTED:'rejected',SUSPENDED:'suspended'})[m.status];user().merchantName=m.merchantName;user().phone=m.phone;}}
-async function syncAccount(){const session=apiSession;if(!session)return;walletState={kind:'loading'};merchantState={kind:'loading'};
- await Promise.all([
-  backend('/me/wallet',{login:true}).then(w=>{if(apiSession===session)applyWallet(w);}).catch(e=>{if(apiSession===session)walletState={kind:'error',error:e.message};}),
-  backend('/me/merchant',{login:true}).then(m=>{if(apiSession===session)applyMerchant(m);}).catch(e=>{if(apiSession!==session)return;if(e.code==='MERCHANT_NOT_FOUND'&&e.status===404){merchantState={kind:'none'};user().merchant='none';}else merchantState={kind:'error',error:e.message};})
- ]);
-}
-function accountStatusMarkup(){if(walletState.kind!=='ready')return `<div class="info-panel notice-panel"><p>${walletState.kind==='error'?esc(walletState.error):'正在查詢帳號與卡片資料…'}</p>${btn('重新查詢','business-refresh')}</div>`;
- const w=walletState.value;return `<div class="info-panel balance-panel"><div class="balance-card"><h2>卡號</h2><p class="card-number">${w.card?esc(w.card.cardNumber):'尚未綁定卡片'}</p><p class="card-state">${w.card?(w.card.status==='ACTIVE'?'卡片有效':'卡片已暫停'):(w.replacementRequired?'卡片已註銷，請洽管理員補卡':'請至卡片管理綁定')}</p></div><div class="balance-side"><h2>可用餘額</h2><div class="balance-row"><p class="balance-value" id="balance-value">${balanceHidden?'****':minorMoney(w.balanceMinor)}</p>${btn(balanceHidden?'顯示餘額':'隱藏餘額','business-balance')}</div></div><div class="actions start"><a class="btn" href="#card">卡片管理</a><a class="btn secondary" href="#transactions">交易紀錄</a>${btn('更新資料','business-refresh',true)}</div></div>`;}
-renderHome=function(){shell('主畫面');workspace(accountStatusMarkup(),false);};
-renderCard=function(){shell('卡片管理');if(walletState.kind!=='ready'){workspace(accountStatusMarkup(),false);return;}const c=walletState.value.card;
- workspace(c?`<div class="info-panel"><h2>目前卡片</h2><dl class="data-list card-details"><div><dt>卡號</dt><dd>${esc(c.cardNumber)}</dd></div><div><dt>卡片狀態</dt><dd>${c.status==='ACTIVE'?'有效':'已停用'}</dd></div><div><dt>綁定時間</dt><dd>${esc(displayTime(c.boundAt))}</dd></div></dl>${btn('更新資料','business-refresh')}</div>`:`<div class="info-panel notice-panel"><p>後端確認目前沒有綁定卡片。</p><a href="#card-insert" class="btn">綁定卡片</a>${btn('更新資料','business-refresh',true)}</div>`,false);};
-function displayTime(v){const d=new Date(v);return Number.isNaN(d.getTime())?'—':d.toLocaleString('zh-TW');}
-renderMerchant=function(){shell('商家介面');let html='';const s=merchantState;
- if(['idle','loading','error'].includes(s.kind))html=`<div class="info-panel notice-panel"><p>${s.kind==='error'?esc(s.error):'正在查詢商家資料…'}</p>${btn('重新查詢','business-refresh')}</div>`;
- else if(s.kind==='none')html='<div class="info-panel merchant-unapplied"><h2>尚未申請商家</h2><a href="#merchant-application" class="btn">申請商家權限</a></div>';
- else{const m=s.value,labels={PENDING:'待審核',APPROVED:'已核准',REJECTED:'申請被拒絕',SUSPENDED:'商家已停權'};
- html=`<div class="info-panel profile-panel"><div class="profile-heading"><h2>商家資訊</h2><span class="badge">${labels[m.status]}</span></div><dl class="data-list"><div><dt>商家名稱</dt><dd>${esc(m.merchantName)}</dd></div><div><dt>電話</dt><dd>${esc(m.phone)}</dd></div><div><dt>申請時間</dt><dd>${esc(displayTime(m.appliedAt))}</dd></div>${m.reviewNote?`<div><dt>審核備註</dt><dd>${esc(m.reviewNote)}</dd></div>`:''}</dl><div class="panel-footer">${btn('更新審核狀態','business-refresh',true)}${m.status==='REJECTED'?'<a href="#merchant-application" class="btn">重新申請</a>':''}${m.status==='APPROVED'?'<a href="#merchant-receipts" class="btn">收款紀錄</a>':''}</div>${m.status==='PENDING'?'<p>申請已送出，請等待管理員審核。</p>':''}${m.status==='SUSPENDED'?'<p>目前無法收款，請聯絡管理員。</p>':''}</div>`;
- if(m.status==='APPROVED')html+=livePaymentPanel();}
- workspace(html,false);
-};
-function paymentStorageKey(){return 'ewallet.pending.'+encodeURIComponent(API_BASE)+'.'+encodeURIComponent(apiSession.user.userId||apiSession.user.username);}
-function savePayment(){sessionStorage.setItem(paymentStorageKey(),JSON.stringify(businessPayment));}
-function restorePayment(){businessPayment=null;try{const v=JSON.parse(sessionStorage.getItem(paymentStorageKey())||'null');if(v&&typeof v.key==='string'&&v.body?.terminalId&&Number.isInteger(v.body.amountCents)&&v.body.amountCents>0){businessPayment=v;}}catch{apiNotice='無法讀取上次付款資料，請先向後端確認尚未完成的訂單。';}}
-function livePaymentPanel(){const p=businessPayment;let content;
- if(!p)content=`<form id="payment-form"><div class="payment-fields">${field('payment-amount','付款金額（新台幣，最多兩位小數）')}${field('payment-terminal','授權讀卡終端代號，例如 reader01')}</div><button class="btn" type="submit">開始收款</button></form><p>商家核准後，仍需由後端登記商家代碼與授權終端。</p>`;
- else{const order=p.order,state=order?.status;const labels={WAITING_CARD:'等待付款人插卡',PROCESSING:'付款處理中',SUCCEEDED:'付款完成，請取卡',FAILED:'付款失敗',CANCELLED:'已取消',EXPIRED:'訂單已逾期'};
- content=`<dl class="payment-summary"><div><dt>金額</dt><dd>${minorMoney(p.body.amountCents)}</dd></div><div><dt>終端</dt><dd>${esc(p.body.terminalId)}</dd></div>${order?`<div><dt>交易單號</dt><dd style="overflow-wrap:anywhere">${esc(order.paymentId)}</dd></div>`:''}</dl><p class="payment-status" role="status">${labels[state]||'建立結果待確認'}</p>${p.error?`<p role="alert">${esc(p.error)}</p>`:''}${order?.failureCode?`<p>原因：${esc(order.failureCode)}</p>`:''}<div class="actions start">${!order?btn('使用原請求確認訂單','business-retry-create')+(p.creationRejected?btn('修正收款資料','business-reset-rejected',true):''):''}${order&&!finalPaymentStates.has(state)?btn('查詢付款結果','business-query')+btn('取消收款','business-cancel',true):''}${finalPaymentStates.has(state)?btn('下一筆收款','business-new')+'<a href="#merchant-receipts" class="btn secondary">查看收款紀錄</a>':''}</div>`;}
- return `<section class="info-panel payment-panel"><h2>刷卡收款</h2>${content}</section>`;
-}
-function checkPaymentOrder(order,p){if(!order||!/^[0-9a-f]{32}$/.test(order.paymentId)||order.amountCents!==p.body.amountCents||order.terminalId!==p.body.terminalId||!['WAITING_CARD','PROCESSING','SUCCEEDED','FAILED','CANCELLED','EXPIRED'].includes(order.status))throw Error('後端訂單內容或狀態不符');if(p.order&&p.order.paymentId!==order.paymentId)throw Error('後端回傳其他訂單');}
-async function updatePaymentOrder(order,p,session){if(apiSession!==session||businessPayment!==p)return;checkPaymentOrder(order,p);const firstSuccess=order.status==='SUCCEEDED'&&p.order?.status!=='SUCCEEDED';p.order=order;p.error=null;savePayment();if(firstSuccess){await syncAccount();recordsState=null;}if(apiSession===session&&['merchant','merchant-profile','merchant-pending'].includes(route))render();}
-async function createPayment(p){const session=apiSession;try{const order=await backend('/payments',{method:'POST',body:p.body,headers:{'Idempotency-Key':p.key},login:true,raw:true});await updatePaymentOrder(order,p,session);}catch(e){if(apiSession===session&&businessPayment===p){p.error=e.message;p.creationRejected=!!(e.status>=400&&e.status<500&&['INVALID_AMOUNT','INVALID_REQUEST','MERCHANT_DISABLED','TERMINAL_NOT_ALLOWED','TERMINAL_BUSY','UNAUTHENTICATED'].includes(e.code));savePayment();render();}}}
-async function queryPayment(p,epoch){if(!p.order||apiSession===null)return;const session=apiSession;
- try{const order=await backend('/payments/'+p.order.paymentId,{login:true,raw:true});if(epoch!==businessEpoch||businessPayment!==p||apiSession!==session)return;await updatePaymentOrder(order,p,session);}
- catch(e){if(epoch===businessEpoch&&businessPayment===p&&apiSession===session){p.error='付款結果尚未確認：'+e.message;savePayment();if(['merchant','merchant-profile'].includes(route))render();}}
-}
-function schedulePayment(){clearTimeout(businessTimer);const p=businessPayment;if(p?.order&&!finalPaymentStates.has(p.order.status)&&apiSession&&['merchant','merchant-profile','merchant-pending'].includes(route)){const epoch=businessEpoch;businessTimer=setTimeout(()=>queryPayment(p,epoch),1000);}}
-async function handleBusinessSubmit(form){if(businessBusy||apiBusy||!apiSession||!form.reportValidity())return;businessBusy=true;const session=apiSession;const epoch=apiEpoch,button=form.querySelector('[type="submit"]');button.disabled=true;
- try{if(form.id==='merchant-form'){if(!['none'].includes(merchantState.kind)&&merchantState.value?.status!=='REJECTED')throw Error('請先更新目前商家狀態');const body={merchantName:form.querySelector('#merchant-name').value.trim(),phone:form.querySelector('#merchant-phone').value.trim()};const data=await backend('/me/merchant',{method:'POST',body,login:true});if(apiSession!==session)return;applyMerchant(data);goto('merchant');}
- else if(form.id==='payment-form'){if(merchantState.value?.status!=='APPROVED')throw Error('商家尚未核准');if(businessPayment)throw Error('請先確認上一筆訂單結果');const amount=centsFromInput(form.querySelector('#payment-amount').value.trim()),terminal=form.querySelector('#payment-terminal').value.trim();if(!terminal||terminal.length>100)throw Error('請填有效的終端代號');const p={key:crypto.randomUUID(),body:{amountCents:amount,terminalId:terminal},order:null};businessPayment=p;try{savePayment();}catch(e){businessPayment=null;throw Error('無法保存重送識別碼，尚未送出訂單');}await createPayment(p);}}
- catch(e){if(apiSession===session&&epoch===apiEpoch)apiMessage(e.message);}finally{businessBusy=false;if(button.isConnected)button.disabled=false;}}
-renderRecords=function(merchant=false){shell(merchant?'商家收款紀錄':'交易紀錄');const type=merchant?'merchant':'personal';let s=recordsState?.type===type?recordsState:null;
- if(!s){recordsState={type,kind:'loading',items:[],cursor:null};s=recordsState;loadRecords(s,false);}
- const headers=merchant?['流水號','日期','金額','狀態']:['帳本編號','日期','類型','金額','狀態'];
- const rows=s.items.map(r=>`<tr><td data-label="${headers[0]}">${esc(r.transactionId)}</td><td data-label="日期">${esc(displayTime(r.completedAt||r.createdAt))}</td>${merchant?'':`<td data-label="類型">${esc(r.type)}</td>`}<td data-label="金額">${minorMoney(merchant?r.amountCents:r.amountMinor)}</td><td data-label="狀態">${esc(r.status)}</td></tr>`).join('');
- workspace(`<div class="info-panel"><div class="actions start">${btn('重新整理紀錄','business-record-refresh')}<a href="#${merchant?'merchant':'home'}" class="btn secondary">返回</a></div><p role="status">${s.kind==='error'?esc(s.error):s.kind==='loading'?'正在查詢紀錄…':''}</p><div class="table-scroll"><table><thead><tr>${headers.map(h=>'<th>'+h+'</th>').join('')}</tr></thead><tbody>${rows||`<tr><td colspan="${headers.length}">${s.kind==='ready'?'目前沒有紀錄':'尚未取得紀錄'}</td></tr>`}</tbody></table></div>${s.cursor?btn('載入下一頁','business-record-more'):''}</div>`,false);
-};
-async function loadRecords(s,more){const session=apiSession;if(!session)return;try{const path=s.type==='merchant'?'/merchant/transactions?limit=20'+(more?'&cursor='+encodeURIComponent(s.cursor):''):'/me/transactions?limit=20'+(more?'&after='+encodeURIComponent(s.cursor):'');const result=await backend(path,{login:true,raw:true});if(apiSession!==session||recordsState!==s)return;const rows=s.type==='merchant'?result.items:result.data;if(!Array.isArray(rows))throw Error('交易紀錄格式不符');const next=s.type==='merchant'?result.nextCursor:result.nextAfter;const ids=new Set(s.items.map(r=>r.transactionId));s.items.push(...rows.filter(r=>!ids.has(r.transactionId)));s.cursor=next&&next!==s.cursor?next:null;s.kind='ready';}catch(e){if(apiSession===session&&recordsState===s){s.kind='error';s.error=e.message;}}if(apiSession===session&&recordsState===s&&['transactions','transaction-search','merchant-receipts'].includes(route))render();}
-document.addEventListener('click',async e=>{const trigger=e.target.closest('[data-action]');if(!trigger?.dataset.action.startsWith('business-'))return;e.preventDefault();e.stopImmediatePropagation();const action=trigger.dataset.action;const session=apiSession;if(!session||businessBusy)return;
- if(action==='business-balance'){balanceHidden=!balanceHidden;render();return;}
- if(action==='business-record-refresh'){recordsState=null;render();return;}
- if(action==='business-record-more'){if(recordsState?.kind==='loading')return;recordsState.kind='loading';loadRecords(recordsState,true);render();return;}
- businessBusy=true;trigger.disabled=true;try{
- if(action==='business-refresh'){await syncAccount();if(apiSession===session)render();}
- else if(action==='business-retry-create'&&businessPayment&&!businessPayment.order)await createPayment(businessPayment);
- else if(action==='business-query'&&businessPayment)await queryPayment(businessPayment,businessEpoch);
- else if(action==='business-cancel'&&businessPayment?.order){const p=businessPayment;try{const result=await backend('/payments/'+p.order.paymentId+'/cancel',{method:'POST',body:{},login:true,raw:true});await updatePaymentOrder(result,p,session);}catch(e){if(apiSession!==session)return;p.error=e.message;savePayment();await queryPayment(p,businessEpoch);}}
- else if(action==='business-reset-rejected'&&businessPayment?.creationRejected&&!businessPayment.order){businessPayment=null;savePayment();render();}
- else if(action==='business-new'&&finalPaymentStates.has(businessPayment?.order?.status)){businessPayment=null;savePayment();render();}
- }catch(e){if(apiSession===session)apiMessage(e.message);}finally{businessBusy=false;if(trigger.isConnected)trigger.disabled=false;}
-},true);
-const priorBusinessRender=render;
-render=function(){businessEpoch++;clearTimeout(businessTimer);if(!apiSession){walletState={kind:'idle'};merchantState={kind:'idle'};businessPayment=null;recordsState=null;}priorBusinessRender();schedulePayment();};
-window.addEventListener('focus',async()=>{const session=apiSession;if(!session||apiBusy||businessBusy||apiTask)return;if(!['home','card','merchant','merchant-profile','merchant-pending'].includes(route))return;await syncAccount();if(apiSession===session)render();});
-
-// Website password recovery. Tokens stay in memory and never enter URLs/storage.
-let passwordRecovery=null,passwordRecoveryBusy=false,passwordRecoveryEpoch=0,passwordLoginNotice='';
-const recoveryRoutes=new Set(['recovery','recovery-question','recovery-password','recovery-complete']);
-function clearPasswordRecovery(){passwordRecovery=null;passwordRecoveryEpoch++;}
-function validRecoveryToken(token){return typeof token==='string'&&/^[0-9a-f]{64}$/.test(token);}
-function validRecoveryExpiry(value){return typeof value==='string'&&Number.isFinite(Date.parse(value))&&Date.parse(value)>Date.now();}
-function recoveryRestart(message){clearPasswordRecovery();location.hash='#recovery';render();apiMessage(message);}
-function renderLiveRecovery(next){
- apiEpoch++;clearTimeout(apiPollTimer);clearTimeout(businessTimer);businessEpoch++;apiNotice='';
- if(dialog.open)dialog.close();main.className='';document.body.classList.remove('sidebar-collapsed');document.querySelector('.sidebar-toggle')?.remove();
- if(next==='recovery-complete'||next==='recovery-question'&&!passwordRecovery?.challengeId||next==='recovery-password'&&!passwordRecovery?.resetToken){clearPasswordRecovery();location.hash='#recovery';next='recovery';}
- if(next==='recovery')clearPasswordRecovery();
- route=next;document.title=next==='recovery'?'忘記密碼':next==='recovery-question'?'安全問題驗證':'更新密碼';
- if(next==='recovery'){
-  authPanel('忘記密碼',`<p class="subtitle">請輸入註冊時的帳號與身分證字號。</p><form id="recovery-form">${field('recovery-account','帳號','text','username')}${field('recovery-identity','身分證字號')}<button class="btn wide" type="submit">下一步</button>${back()}</form>`,'recovery-panel account-step');
-  const account=document.querySelector('#recovery-account');account.pattern='[A-Za-z0-9_]{3,50}';account.maxLength=50;document.querySelector('#recovery-identity').maxLength=10;
- }else if(next==='recovery-question'){
-  authPanel('安全問題驗證',`<form id="answer-form"><div class="question-heading"><span>安全提示問題</span></div><div class="question-box">${esc(passwordRecovery.question)}</div>${field('recovery-answer','答案')}<p>請於五分鐘內完成驗證。取得問題不代表身分驗證成功。</p><button class="btn wide" type="submit">驗證答案</button><a class="btn secondary wide" href="#recovery">重新開始</a>${back()}</form>`,'recovery-panel question-step');document.querySelector('#recovery-answer').maxLength=128;
- }else{
-  authPanel('更新密碼',`<form id="recovery-password-form">${field('new-password','新密碼','password','new-password')}${field('confirm-password','請再次輸入新密碼','password','new-password')}<p>密碼須為12–128字元，請於兩分鐘內完成。</p><button class="btn wide" type="submit">確認更新</button><a class="btn secondary wide" href="#recovery">重新開始</a>${back()}</form>`,'recovery-panel password-step');
-  for(const id of ['new-password','confirm-password']){const input=document.querySelector('#'+id);input.minLength=12;input.maxLength=128;}
- }
-}
-async function handleRecoverySubmit(form){
- if(passwordRecoveryBusy||!form.reportValidity())return;
- const value=id=>form.querySelector('#'+id).value;const epoch=passwordRecoveryEpoch;let path,body;
- if(form.id==='recovery-form'){path='/auth/password/challenges';body={username:value('recovery-account').trim(),nationalId:value('recovery-identity').trim()};}
- else if(form.id==='answer-form'){
-  if(!passwordRecovery?.challengeId||!validRecoveryExpiry(passwordRecovery.expiresAt)){recoveryRestart('驗證已過期，請重新開始。');return;}
-  const answer=value('recovery-answer');if(answer.length<1||answer.length>128||!answer.trim()){errorFor('recovery-answer','請輸入1–128字元的答案。');return;}
-  path='/auth/password/verify';body={challengeId:passwordRecovery.challengeId,answer};
- }else{
-  if(!passwordRecovery?.resetToken||passwordRecovery.uncertain||!validRecoveryExpiry(passwordRecovery.expiresAt)){recoveryRestart('重設憑證已無法使用，請重新開始；若先前已送出，請先嘗試登入。');return;}
-  const newPassword=value('new-password'),confirmPassword=value('confirm-password');
-  if(newPassword.length<12||newPassword.length>128){errorFor('new-password','密碼須為12–128字元。');return;}
-  if(newPassword!==confirmPassword){errorFor('confirm-password','兩次密碼不一致。');return;}
-  path='/auth/password/reset';body={resetToken:passwordRecovery.resetToken,newPassword,confirmPassword};
- }
- const button=form.querySelector('[type="submit"]');passwordRecoveryBusy=true;button.disabled=true;apiMessage('正在連線後端…');
- try{
-  const result=await backend(path,{method:'POST',body});if(epoch!==passwordRecoveryEpoch)return;
-  if(path.endsWith('/challenges')){
-   if(!validRecoveryToken(result?.challengeId)||typeof result.question!=='string'||!result.question||!validRecoveryExpiry(result.expiresAt))throw Error('後端驗證資料不完整，請重新開始。');
-   passwordRecovery={challengeId:result.challengeId,question:result.question,expiresAt:result.expiresAt};form.reset();goto('recovery-question');
-  }else if(path.endsWith('/verify')){
-   if(!validRecoveryToken(result?.resetToken)||!validRecoveryExpiry(result.expiresAt)){recoveryRestart('後端重設憑證不完整，請重新開始。');return;}
-   passwordRecovery={resetToken:result.resetToken,expiresAt:result.expiresAt};form.reset();goto('recovery-password');
-  }else{
-   if(result?.reset!==true||result.requireLogin!==true){const error=Error('後端未確認密碼重設結果。');error.uncertain=true;throw error;}
-   form.reset();clearPasswordRecovery();apiSession=null;authenticated=false;users=new Map();currentKey=null;clearApiTask();clearTimeout(businessTimer);businessEpoch++;businessPayment=null;walletState={kind:'idle'};merchantState={kind:'idle'};recordsState=null;
-   passwordLoginNotice='密碼已更新，請使用新密碼重新登入。';goto('login');
-  }
- }catch(e){
-  if(epoch!==passwordRecoveryEpoch)return;
-  if(path.endsWith('/reset')&&e.uncertain){passwordRecovery=null;passwordRecoveryEpoch++;form.reset();apiMessage('連線中斷，密碼可能已更新。請按「返回登入」，先用新密碼登入確認結果；不要直接重送。');button.disabled=true;return;}
-  if(e.status===401||e.code==='INVALID_RESET_TOKEN'){recoveryRestart(e.message+' 請重新開始。');return;}
-  apiMessage(e.code==='RATE_LIMIT'?'操作過於頻繁，請稍後再試。':e.message);
- }finally{passwordRecoveryBusy=false;if(button.isConnected&&passwordRecoveryEpoch===epoch)button.disabled=false;}
-}
-const priorRecoveryRender=render;
-render=function(){const next=location.hash.slice(1)||'login';if(recoveryRoutes.has(next)){renderLiveRecovery(next);return;}if(passwordRecovery||recoveryRoutes.has(route))clearPasswordRecovery();priorRecoveryRender();if(next==='login'&&passwordLoginNotice){apiMessage(passwordLoginNotice);passwordLoginNotice='';}};
-
-// User actions from 使用者功能串接與驗收_20261117.md.
-let userActionBusy=false,revokeUncertain=false;
-let recordDateRange={personal:{fromDate:'',toDate:''},merchant:{fromDate:'',toDate:''}};
-function clearUserSession(notice=''){
- apiSession=null;authenticated=false;users=new Map();currentKey=null;clearApiTask();clearPasswordRecovery();clearTimeout(businessTimer);businessEpoch++;businessPayment=null;walletState={kind:'idle'};merchantState={kind:'idle'};recordsState=null;recordDateRange={personal:{fromDate:'',toDate:''},merchant:{fromDate:'',toDate:''}};revokeUncertain=false;passwordLoginNotice=notice;goto('login');
-}
-const priorUserHome=renderHome;
-renderHome=function(){priorUserHome();document.querySelector('#workspace-content').insertAdjacentHTML('beforeend','<div class="actions start"><a class="btn secondary" href="#account-password">變更網站密碼</a></div>');};
-renderCard=function(){shell('卡片管理');if(walletState.kind!=='ready'){workspace(accountStatusMarkup(),false);return;}const w=walletState.value,c=w.card;
- workspace(c?`<div class="info-panel"><h2>目前卡片</h2><dl class="data-list card-details"><div><dt>卡號</dt><dd>${esc(c.cardNumber)}</dd></div><div><dt>卡片狀態</dt><dd>${c.status==='ACTIVE'?'有效':'已暫停，請聯絡管理員'}</dd></div><div><dt>綁定時間</dt><dd>${esc(displayTime(c.boundAt))}</dd></div></dl><div class="actions start">${btn('更新資料','business-refresh')}<a class="btn secondary" href="#account-password">變更網站密碼</a><a class="btn secondary" href="#card-cancel">遺失註銷</a></div></div>`:`<div class="info-panel notice-panel"><p>${w.replacementRequired?'卡片已註銷，需由管理員核對身分後辦理補卡。原帳號餘額與交易紀錄保留。':'後端確認目前沒有綁定卡片。'}</p>${w.replacementRequired?'':'<a href="#card-insert" class="btn">綁定卡片</a>'}${btn('更新資料','business-refresh',true)}</div>`,false);
-};
-displayTime=function(value){const d=new Date(value);return Number.isNaN(d.getTime())?'—':d.toLocaleString('zh-TW',{timeZone:'Asia/Taipei',hour12:false});};
-function renderUserAction(next){
- apiEpoch++;businessEpoch++;clearTimeout(businessTimer);clearTimeout(apiPollTimer);if(dialog.open)dialog.close();route=next;
- if(!apiSession){goto('login');return;}
- shell(next==='card-cancel'?'遺失註銷':'變更網站密碼');
- if(next==='card-cancel'){
-  const w=walletState.kind==='ready'?walletState.value:null;
-  if(!w?.card){workspace('<div class="info-panel notice-panel"><p>請先查詢本人目前卡片，確認是否仍可註銷。</p>'+btn('更新資料','business-refresh')+'<a href="#card" class="btn secondary">返回卡片管理</a></div>',false);return;}
-  workspace(`<div class="info-panel"><h2>確認註銷卡片</h2><p>卡號：${esc(w.card.cardNumber)}</p><p>註銷後此卡永久失效，無法恢復或重新綁回。餘額與交易紀錄保留，須由管理員核對身分後補發新卡。</p>${revokeUncertain?'<p role="alert">上次結果尚未確認，請先更新資料核對卡片狀態。</p>':btn('確認永久註銷','user-revoke')}<div class="actions start">${btn('更新資料','business-refresh')}<a href="#card" class="btn secondary">取消並返回</a></div></div>`,false);
- }else{
-  workspace(`<div class="info-panel"><form id="account-password-form">${field('account-old-password','目前網站密碼','password','current-password')}${field('account-new-password','新網站密碼','password','new-password')}${field('account-confirm-password','確認新密碼','password','new-password')}<p>新密碼為12–128字元，且不能與舊密碼相同。成功後所有裝置須重新登入。</p><button class="btn" type="submit">確認變更</button><a href="#home" class="btn secondary">返回主畫面</a></form></div>`,false);
-  document.querySelector('#account-old-password').maxLength=128;for(const id of ['account-new-password','account-confirm-password']){const input=document.querySelector('#'+id);input.minLength=12;input.maxLength=128;}
- }
-}
-async function handleUserSubmit(form){
- if(form.id==='record-date-form'){
-  const from=form.querySelector('#records-from').value,to=form.querySelector('#records-to').value;
-  if(!validCalendarDate(from)||!validCalendarDate(to)||from&&to&&from>to){apiMessage('請輸入有效日期，起日不能晚於迄日。');return;}
-  recordDateRange[route==='merchant-receipts'?'merchant':'personal']={fromDate:from,toDate:to};recordsState=null;render();return;
- }
- if(userActionBusy||!apiSession||!form.reportValidity())return;
- const body={oldPassword:form.querySelector('#account-old-password').value,newPassword:form.querySelector('#account-new-password').value,confirmPassword:form.querySelector('#account-confirm-password').value};
- if(body.oldPassword.length<1||body.oldPassword.length>128){errorFor('account-old-password','請輸入目前密碼，最多128字元。');return;}
- if(body.newPassword.length<12||body.newPassword.length>128){errorFor('account-new-password','新密碼須為12–128字元。');return;}
- if(body.newPassword!==body.confirmPassword){errorFor('account-confirm-password','兩次密碼不一致。');return;}
- if(body.oldPassword===body.newPassword){errorFor('account-new-password','新密碼不能與目前密碼相同。');return;}
- const session=apiSession,epoch=apiEpoch,button=form.querySelector('[type="submit"]');userActionBusy=true;button.disabled=true;
- try{const result=await backend('/auth/password/change',{method:'POST',body,login:true});if(apiSession!==session)return;
-  if(result?.changed!==true||result.requireLogin!==true){const e=Error('後端未確認變更結果');e.uncertain=true;throw e;}
-  form.reset();clearUserSession('網站密碼已更新，請使用新密碼重新登入。');
- }catch(e){if(apiSession!==session)return;if(e.uncertain){form.reset();clearUserSession('變更結果尚未確認，請先嘗試使用新密碼登入。');}else if(e.status===401){clearUserSession('登入已失效，請重新登入。');}else if(epoch===apiEpoch)apiMessage(e.message);}
- finally{userActionBusy=false;if(button.isConnected)button.disabled=false;}
-}
-async function handleUserClick(action){
- if(userActionBusy||!apiSession)return;const session=apiSession;userActionBusy=true;
- try{
-  if(action==='confirm-logout'){
-   try{await backend('/auth/logout',{method:'POST',body:{},login:true});}catch(e){if(e.status!==401)throw e;}
-   if(apiSession===session)clearUserSession('已登出。');return;
-  }
-  // Always recheck the current server card before revoking; never accept a card ID from the page.
-  const wallet=await backend('/me/wallet',{login:true});if(apiSession!==session)return;applyWallet(wallet);
-  if(!wallet.card){revokeUncertain=false;goto('card');return;}
-  const result=await backend('/me/cards/revoke',{method:'POST',body:{},login:true});if(apiSession!==session)return;
-  if(result?.revoked!==true){const e=Error('後端未確認註銷結果');e.uncertain=true;throw e;}
-  revokeUncertain=false;await syncAccount();if(apiSession===session){goto('card');render();apiMessage('後端已確認卡片註銷。');}
- }catch(e){if(apiSession!==session)return;
-  if(e.status===401){clearUserSession('登入已失效，請重新登入。');return;}
-  if(action==='user-revoke'&&(e.uncertain||e.code==='NO_BOUND_CARD')){revokeUncertain=true;await syncAccount();if(apiSession!==session)return;if(walletState.kind==='ready'){revokeUncertain=false;goto('card');render();}apiMessage('請依更新後的卡片狀態確認註銷結果。'+(walletState.kind==='error'?e.message:''));}
-  else apiMessage(action==='confirm-logout'?'登出尚未確認，請重試。'+e.message:e.message);
- }finally{userActionBusy=false;}
-}
-function validCalendarDate(s){if(!s)return true;if(!/^\d{4}-\d{2}-\d{2}$/.test(s))return false;const d=new Date(s+'T00:00:00Z');return !Number.isNaN(d.getTime())&&d.toISOString().slice(0,10)===s;}
-renderRecords=function(merchant=false){
- shell(merchant?'商家收款紀錄':'交易紀錄');const type=merchant?'merchant':'personal',range=recordDateRange[type];let s=recordsState?.type===type?recordsState:null;
- if(!s){recordsState={type,kind:'loading',items:[],cursor:null,range:{...range}};s=recordsState;loadRecords(s,false);}
- const headers=merchant?['流水號','日期（台北）','金額','狀態']:['帳本編號','日期（台北）','類型','金額','狀態'];
- const rows=s.items.map(r=>`<tr><td>${esc(r.transactionId)}</td><td>${esc(displayTime(r.completedAt||r.createdAt))}</td>${merchant?'':`<td>${esc(r.type)}</td>`}<td>${minorMoney(merchant?r.amountCents:r.amountMinor)}</td><td>${esc(r.status)}</td></tr>`).join('');
- workspace(`<div class="info-panel"><form id="record-date-form" class="date-filter"><label for="records-from">起日（台北）</label><input id="records-from" type="date" value="${esc(range.fromDate)}"><label for="records-to">迄日（含當日）</label><input id="records-to" type="date" value="${esc(range.toDate)}"><button class="btn" type="submit">查詢</button>${btn('清除日期','user-clear-dates',true)}</form><p>依交易完成／入帳時間篩選全部紀錄，再分頁。</p><div class="actions start">${btn('重新整理紀錄','business-record-refresh')}<a href="#${merchant?'merchant':'home'}" class="btn secondary">返回</a></div><p role="status">${s.kind==='error'?esc(s.error):s.kind==='loading'?'正在查詢紀錄…':''}</p><div class="table-scroll"><table><thead><tr>${headers.map(h=>'<th>'+h+'</th>').join('')}</tr></thead><tbody>${rows||`<tr><td colspan="${headers.length}">${s.kind==='ready'?'目前沒有符合條件的紀錄':'尚未取得紀錄'}</td></tr>`}</tbody></table></div>${s.cursor?btn('載入下一頁','business-record-more'):''}</div>`,false);
-};
-loadRecords=async function(s,more){const session=apiSession;if(!session)return;try{
- const query=new URLSearchParams({limit:'20'});for(const [k,v] of Object.entries(s.range||{}))if(v)query.set(k,v);if(more)query.set(s.type==='merchant'?'cursor':'after',s.cursor);
- const result=await backend((s.type==='merchant'?'/merchant/transactions':'/me/transactions')+'?'+query.toString(),{login:true,raw:true});if(apiSession!==session||recordsState!==s)return;
- const rows=s.type==='merchant'?result.items:result.data;if(!Array.isArray(rows))throw Error('交易紀錄格式不符');const next=s.type==='merchant'?result.nextCursor:result.nextAfter,ids=new Set(s.items.map(r=>r.transactionId));s.items.push(...rows.filter(r=>!ids.has(r.transactionId)));s.cursor=rows.length&&next&&next!==s.cursor?next:null;s.kind='ready';
- }catch(e){if(apiSession===session&&recordsState===s){s.kind='error';s.error=e.message;}}
- if(apiSession===session&&recordsState===s&&['transactions','transaction-search','merchant-receipts'].includes(route))render();
-};
-document.addEventListener('click',e=>{const trigger=e.target.closest('[data-action]');if(trigger?.dataset.action==='user-clear-dates'){e.preventDefault();e.stopImmediatePropagation();recordDateRange[route==='merchant-receipts'?'merchant':'personal']={fromDate:'',toDate:''};recordsState=null;render();}},true);
-const priorUserRender=render;
-render=function(){const next=location.hash.slice(1)||'login';
- if(['account-password','card-password','card-cancel'].includes(next)){renderUserAction(next);return;}
- if(['card-insert','card-reading','card-bind-confirm'].includes(next)&&walletState.kind==='ready'&&walletState.value.replacementRequired){clearApiTask();goto('card');return;}
- priorUserRender();
-};
-
-render();
+dialog.addEventListener('cancel',e=>{e.preventDefault();if(tx?.stage==='confirm'){tx.stage='amount';render();}if(bindStage){bindStage='';deviceControls();}closeDialog();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&menuOpen&&!dialog.open){menuOpen=false;document.querySelector('.sidebar')?.classList.remove('open');document.querySelector('.menu-button').setAttribute('aria-expanded','false');}});
+window.addEventListener('hashchange',()=>{const next=entryPage(location.hash.slice(1)||defaultPage());if(location.hash!==`#${next}`)history.replaceState(null,'',`#${next}`);if(next===page)return;if(!guardedNavigation(next)){history.replaceState(null,'',`#${page}`);return;}page=next;if(ENTRY!=='user')mode=ENTRY;if(page==='login'){loggedIn=false;recoveryStep=0;recoveryUser=null;}if(tx&&['ready','form'].includes(tx.stage))clearTransaction();render();document.querySelector('#content h1')?.setAttribute('tabindex','-1');document.querySelector('#content h1')?.focus({preventScroll:true});scrollTo(0,0);});
+window.addEventListener('storage',e=>{if(e.key===KEY&&!tx){try{const next=JSON.parse(e.newValue);if(next?.version===VERSION){db=next;if(!user()){current=db.users[0].username;loggedIn=false;if(ENTRY==='user'){page='login';history.replaceState(null,'','#login');}}render();toast('已同步其他頁面的模擬資料。');}}catch{}}});
+window.addEventListener('beforeunload',e=>{if(tx&&['processing','unknown'].includes(tx.stage)){e.preventDefault();e.returnValue='';}});
+page=entryPage(location.hash.slice(1)||defaultPage());mode=ENTRY;if(ENTRY==='user'&&!['login','register','recovery'].includes(page))page='login';history.replaceState(null,'',`#${page}`);render();

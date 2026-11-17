@@ -1,62 +1,17 @@
 <!doctype html>
-<html lang="zh-Hant">
+<html lang="zh-Hant" data-type="software">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="個人帳戶登入入口，使用帳號與密碼登入個人帳戶。">
-  <meta name="theme-color" content="#dce5ef">
-  <meta name="color-scheme" content="light">
-  <title>個人帳戶登入｜個人帳戶</title>
-  <link rel="stylesheet" href="./style.css">
-  <link rel="stylesheet" href="./account.css">
-  <script src="./app.js" defer></script>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="科技金融交易系統專題展示：模擬收款、現金儲值、卡片管理及管理員審核。無實際金流。">
+  <meta name="theme-color" content="#081a26"><meta name="page-type" content="software"><meta name="site-kind" content="software">
+  <title>科技金融交易系統｜模擬交易</title>
+  <link rel="stylesheet" href="./style.css?v=dark-ui-20261117-r2"><link rel="stylesheet" href="./live.css?v=dark-ui-20261117-r2"><script src="./app.js?v=dark-ui-20261117-r2" defer></script><script src="./api-client.js?v=dark-ui-20261117-r2" defer></script><script src="./user-live.js?v=dark-ui-20261117-r2" defer></script>
 </head>
-<body>
-  <a class="skip-link" href="#main-content">跳至主要內容</a>
-  <header class="site-header">
-    <a class="site-name" href="#login" aria-label="個人帳戶首頁">個人帳戶</a>
-    <div class="header-light" aria-hidden="true"><span></span></div>
-  </header>
-  <main id="main-content" tabindex="-1">
-    <section class="login-panel" aria-labelledby="login-title">
-      <h1 id="login-title">個人帳戶登入</h1>
-      <form id="login-form">
-        <div class="field">
-          <label for="account">帳號</label>
-          <input id="account" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required>
-        </div>
-        <div class="field">
-          <label for="password">密碼</label>
-          <div class="password-input">
-            <input id="password" name="password" type="password" autocomplete="current-password" placeholder="********" required>
-            <button class="password-toggle" type="button" aria-label="顯示密碼" aria-controls="password" aria-pressed="false"><img class="eye-icon" src="./assets/icons/eye.svg" alt="" aria-hidden="true" width="39" height="30"></button>
-          </div>
-        </div>
-        <button class="login-button" type="submit" disabled>登入</button>
-        <nav class="account-links" aria-label="帳戶協助">
-          <a href="#register">註冊</a>
-          <a href="#recovery">忘記密碼</a>
-        </nav>
-        <p id="form-message" class="form-message" role="status" aria-live="polite" hidden></p>
-      </form>
-    </section>
-  </main>
-  <div class="bottom-light bottom-light-left" aria-hidden="true"></div>
-  <div class="bottom-light bottom-light-right" aria-hidden="true"></div>
-  <aside class="demo-tools" aria-label="流程示範工具">
-    <details id="demo-tools">
-      <summary>流程示範 <span aria-hidden="true">· 27 畫面</span></summary>
-      <div class="demo-drawer">
-        <h2>個人帳戶 · 流程預覽</h2>
-        <p>僅使用虛構資料，未連接後端、金流或讀卡設備。請勿填入真實個資。重新整理會清除本次操作資料。</p>
-        <p class="demo-credentials">示範帳號：<b>demo</b>　密碼：<b>demo1234</b><br>安全問題答案：<b>小王子</b>　示範證號：<b>DEMO-ID-001</b></p>
-        <div class="demo-actions"><button type="button" data-action="demo-login">以示範帳戶進入</button><button type="button" data-action="demo-reset">重置示範</button></div>
-        <label for="preview-screen">直接預覽參考畫面</label>
-        <select id="preview-screen"><option value="">選擇畫面 01–27</option></select>
-      </div>
-    </details>
-  </aside>
-  <dialog id="flow-dialog" class="flow-dialog" aria-labelledby="dialog-title"></dialog>
-  <noscript><p class="no-script">此網站為流程示範；請啟用 JavaScript 操作，尚未串接正式帳戶服務。</p></noscript>
-</body>
-</html>
+<body data-entry="user">
+  <a class="skip" href="#content">跳至主要內容</a>
+  <header class="topbar"><a class="brand" href="#home"><i></i>科技金融交易系統</a><div class="top-tools"><button class="icon-button menu-button" data-action="menu" aria-label="開啟導覽" aria-expanded="false">☰</button><span id="area-name">個人帳戶</span></div></header>
+  <div id="app"></div>
+  <footer class="simulation-tools"><details id="sim-tools"><summary>模擬控制台</summary><div class="tools-body"><p>僅使用虛構資料，不連接 MySQL、金流或讀卡機。資料儲存在此瀏覽器，可隨時重置。</p><label>使用者身分<select id="mode"><option value="user">個人帳戶</option><option value="merchant">商家收款</option></select></label><label class="check"><input id="auto-events" type="checkbox" checked>自動模擬讀卡與處理回應</label><div class="actions"><button data-action="load-fixture">載入流程測試資料</button><button data-action="reset-demo">重置為空帳戶</button></div><div id="device-controls"></div><p class="small" id="fixture-note">流程測試：付款人初始 NT$ 1,280，商家收款 300 後餘額 980，再儲值 500 後為 1,480。</p></div></details></footer>
+  <dialog id="dialog" aria-labelledby="dialog-title"></dialog><div id="toast" role="status" aria-live="polite"></div>
+  <noscript>本專題展示需要 JavaScript，請啟用後再操作。</noscript>
+</body></html>
