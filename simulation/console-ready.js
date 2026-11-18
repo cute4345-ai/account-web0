@@ -117,17 +117,19 @@ consoleAdminContent=function(){
 function consoleManagementLinks(){return '<section class="panel"><h2>其他管理功能</h2><div class="actions">'+[['admin-cards','卡片暫停／恢復'],['admin-replace','補卡'],['admin-stations','讀卡工作站'],['admin-transactions','全站交易'],['admin-audit','稽核紀錄'],['admin-operators','舊操作員授權']].map(([route,label])=>'<button data-action="console-open-page" data-page="'+route+'">'+label+'</button>').join('')+consoleButton('登出管理員','logout')+'</div></section>';}
 function consoleReviewDialog(decision){const merchant=consoleDetail?.merchant;if(!merchant||merchant.status!=='PENDING')throw Error('請先更新待審核商家資料');openDialog(decision==='APPROVED'?'核准商家申請':'駁回商家申請',`<p>商家：${esc(merchant.merchantName)}</p><form id="console-review"><input id="console-merchant-id" type="hidden" value="${esc(merchant.merchantId)}"><input id="console-decision" type="hidden" value="${decision}">${field('console-review-note','審核備註')}<div class="actions">${consoleButton('取消','close')}<button class="primary">確認送出</button></div></form>`);}
 
+// Match semantic actions: browsers normalize whitespace and boolean attributes in innerHTML.
+function consoleReplaceAction(html,action,replacement){return html.replace(new RegExp('<button\\b(?=[^>]*\\bdata-action="'+action+'")[^>]*>[\\s\\S]*?</button>','g'),()=>replacement);}
 function consoleTopupRender(){const f=consoleFlow,stage=({idle:'start',ready:'start',reading:'waiting',card:'amount',confirm:'confirm',cash:'processing',processing:'processing',unknown:'unknown',success:'success',failed:'error',cancelled:'error',expired:'error'})[f.stage];
  tx=stage==='start'?null:{kind:'topup',stage,id:f.receipt?.transactionId||'',amount:Number(f.pending?.amountMinor||f.saved?.amountMinor||f.state?.amountMinor||0)/100,inserted:!['waiting','start'].includes(stage),balanceAfter:f.balanceMinor===null?null:Number(f.balanceMinor)/100,committed:f.stage==='success',error:f.receipt?.failureCode||({failed:'儲值失敗，沒有入帳。',cancelled:'本次操作已取消。',expired:'工作階段已到期。'})[f.stage]||''};
  consoleOriginalVisual.renderTopup();document.body.dataset.stage=stage;let html=app.innerHTML;
- html=html.replace(btn('模擬插入卡片','device-insert',true),'<p>工作站：'+esc(f.session?.stationName||'後端指定讀卡站')+'。請依機台提示插卡。</p>');
- html=html.replace(btn('取消','transaction-cancel'),consoleButton('取消','cancel')).replace(btn('開始儲值','topup-start',true),consoleButton('開始儲值','read',true));
+ html=consoleReplaceAction(html,'device-insert','<p>工作站：'+esc(f.session?.stationName||'後端指定讀卡站')+'。請依機台提示插卡。</p>');
+ html=consoleReplaceAction(html,'transaction-cancel',consoleButton('取消','cancel'));html=consoleReplaceAction(html,'topup-start',consoleButton('開始儲值','read',true));
  html=html.replace('id="topup-form"','id="console-topup-amount"').replace('id="topup-amount" name="topup-amount"','id="console-amount" name="console-amount"').replace('for="topup-amount"','for="console-amount"').replace('min="1" max="9999999" step="1" inputmode="numeric"','min="0.01" max="10000" step="0.01" inputmode="decimal"').replace('讀卡完成 · 卡號末四碼 4821','讀卡完成 · 卡號 '+esc(f.session?.cardNumber||'—')).replace('請先核對收到的現金。','請輸入金額，後續由機台確認模擬收款。');
  if(['card','confirm'].includes(f.stage))html=html.replace('<h1>輸入儲值金額</h1>','<h1>輸入儲值金額</h1><p>目前餘額：'+consoleMoney(f.balanceMinor)+'</p>'+consoleButton('查看餘額','balance'));
  if(f.stage==='cash')html=html.replace('正在加值，請稍候','等待機台確認模擬收款').replace('請勿取出卡片或重複送出。','請核對讀卡電腦上的金額，確認模擬投入後才會入帳。');
- html=html.replace(btn('查詢原交易結果（模擬）','device-resolve',true),consoleButton('查詢原交易結果','retry',true));
- html=html.replace(btn('模擬取回卡片','device-remove',true),consoleButton(f.stage==='success'?'結束交易':'取卡後結束','finish'));
- html=html.replace(btn('開始下一筆','next-transaction',false,true),consoleButton('取卡後繼續交易','next',true)).replace('收到拔卡事件後，才會啟用下一筆。','請先取卡；下一筆仍需重新插卡，不會自動連續加值。');
+ html=consoleReplaceAction(html,'device-resolve',consoleButton('查詢原交易結果','retry',true));
+ html=consoleReplaceAction(html,'device-remove',consoleButton(f.stage==='success'?'結束交易':'取卡後結束','finish'));
+ html=consoleReplaceAction(html,'next-transaction',consoleButton('取卡後繼續交易','next',true)).replace('收到拔卡事件後，才會啟用下一筆。','請先取卡；下一筆仍需重新插卡，不會自動連續加值。');
  if(['failed','cancelled','expired'].includes(f.stage))html=html.replace('<h1>讀卡失敗</h1>','<h1>'+({failed:'儲值未完成',cancelled:'已取消',expired:'工作階段已到期'})[f.stage]+'</h1>');
  html=html.replace('模擬現金儲值 · 無實際金流 · 儲值工作站獨立入口','自助儲值 · 由機台確認模擬收款 · 無實際銀行金流');
  if(f.stage==='unknown'&&f.availabilityWait)html=html.replace('正在確認加值結果','等候讀卡工作站上線／空閒');
