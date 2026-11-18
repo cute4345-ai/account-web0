@@ -2,6 +2,7 @@
 if(ENTRY==='admin'||ENTRY==='topup'){
  let consoleMode='api';
  const consoleCfg=window.WalletConsoleConfig,consoleApi=new WalletConsole.AdminApi(consoleCfg.apiBase,consoleCfg.adminQueries),consoleFlow=new WalletConsole.KioskFlow(consoleCfg.apiBase);
+ let consoleTopupViewKey=null;
  let consoleError='',consoleBusy=false,consoleRows=null,consoleCursor=null,consoleKind='',consoleSearch='',consoleDetail=null,consoleTask=null,consoleRevision=0,consoleBlocked=false,consoleStats=null,consoleReplacementWait=null;
  const consoleMoney=value=>{if(!/^\d+$/.test(String(value)))return '—';const n=BigInt(value);return 'NT$ '+(n/100n).toLocaleString('zh-TW')+'.'+String(n%100n).padStart(2,'0');};
  const consoleTime=value=>{const d=new Date(value);return Number.isNaN(d.getTime())?'—':d.toLocaleString('zh-TW',{timeZone:'Asia/Taipei'});};
@@ -119,7 +120,10 @@ function consoleReviewDialog(decision){const merchant=consoleDetail?.merchant;if
 
 // Match semantic actions: browsers normalize whitespace and boolean attributes in innerHTML.
 function consoleReplaceAction(html,action,replacement){return html.replace(new RegExp('<button\\b(?=[^>]*\\bdata-action="'+action+'")[^>]*>[\\s\\S]*?</button>','g'),()=>replacement);}
-function consoleTopupRender(){const f=consoleFlow,stage=({idle:'start',ready:'start',reading:'waiting',card:'amount',confirm:'confirm',cash:'processing',processing:'processing',unknown:'unknown',success:'success',failed:'error',cancelled:'error',expired:'error'})[f.stage];
+function consoleTopupRender(){const f=consoleFlow;
+ const viewKey=JSON.stringify([f.stage,consoleBusy,consoleError,!!f.availabilityWait,f.balanceMinor,f.session?.stationName,f.session?.cardNumber,f.pending?.amountMinor,f.saved?.amountMinor,f.state?.amountMinor,f.receipt?.transactionId,f.receipt?.failureCode]);
+ if(viewKey===consoleTopupViewKey)return;
+ const stage=({idle:'start',ready:'start',reading:'waiting',card:'amount',confirm:'confirm',cash:'processing',processing:'processing',unknown:'unknown',success:'success',failed:'error',cancelled:'error',expired:'error'})[f.stage];
  tx=stage==='start'?null:{kind:'topup',stage,id:f.receipt?.transactionId||'',amount:Number(f.pending?.amountMinor||f.saved?.amountMinor||f.state?.amountMinor||0)/100,inserted:!['waiting','start'].includes(stage),balanceAfter:f.balanceMinor===null?null:Number(f.balanceMinor)/100,committed:f.stage==='success',error:f.receipt?.failureCode||({failed:'儲值失敗，沒有入帳。',cancelled:'本次操作已取消。',expired:'工作階段已到期。'})[f.stage]||''};
  consoleOriginalVisual.renderTopup();document.body.dataset.stage=stage;let html=app.innerHTML;
  html=consoleReplaceAction(html,'device-insert','<p>工作站：'+esc(f.session?.stationName||'後端指定讀卡站')+'。請依機台提示插卡。</p>');
@@ -133,12 +137,12 @@ function consoleTopupRender(){const f=consoleFlow,stage=({idle:'start',ready:'st
  if(['failed','cancelled','expired'].includes(f.stage))html=html.replace('<h1>讀卡失敗</h1>','<h1>'+({failed:'儲值未完成',cancelled:'已取消',expired:'工作階段已到期'})[f.stage]+'</h1>');
  html=html.replace('模擬現金儲值 · 無實際金流 · 儲值工作站獨立入口','自助儲值 · 由機台確認模擬收款 · 無實際銀行金流');
  if(f.stage==='unknown'&&f.availabilityWait)html=html.replace('正在確認加值結果','等候讀卡工作站上線／空閒');
- app.innerHTML=html;document.querySelector('.station .page').insertAdjacentHTML('beforeend',consoleNotice());
+ app.innerHTML=html;document.querySelector('.station .page').insertAdjacentHTML('beforeend',consoleNotice());consoleTopupViewKey=viewKey;
  if(f.stage==='confirm'&&!dialog.open)openDialog('確認加值',`<p style="text-align:center">本次儲值金額</p><p class="amount">${consoleMoney(f.pending.amountMinor)}</p><p style="text-align:center">請核對金額。後續須由機台確認模擬投入，不會在此直接加值。</p><div class="actions">${consoleButton('返回修改','edit')}${consoleButton('確認送出','submit',true)}</div>`,{dark:true});
 }
 
  const previousConsoleRender=render;
- render=function(){consoleToolbar();if(consoleMode==='demo'){previousConsoleRender();return;}document.body.dataset.page=ENTRY==='topup'?'topup':page;document.title=(ENTRY==='admin'?'管理員後台':'儲值工作站')+'｜後端連線模式';paused=false;document.body.classList.remove('motion-paused');document.querySelector('#area-name').textContent=ENTRY==='admin'?'管理員後台':'卡片儲值';if(ENTRY==='admin')consoleAdminRender();else consoleTopupRender();consoleAutoSchedule();};
+ render=function(){consoleToolbar();if(consoleMode==='demo'){consoleTopupViewKey=null;previousConsoleRender();return;}document.body.dataset.page=ENTRY==='topup'?'topup':page;document.title=(ENTRY==='admin'?'管理員後台':'儲值工作站')+'｜後端連線模式';paused=false;document.body.classList.remove('motion-paused');document.querySelector('#area-name').textContent=ENTRY==='admin'?'管理員後台':'卡片儲值';if(ENTRY==='admin')consoleAdminRender();else consoleTopupRender();consoleAutoSchedule();};
  async function consoleAction(fn){if(consoleBusy)return;consoleBusy=true;consoleError='';render();try{await fn();}catch(e){consoleError=e.code==='NOT_CONFIGURED'?e.message:(e.message||'操作未完成');}finally{consoleBusy=false;render();}}
  document.addEventListener('submit',e=>{if(consoleMode!=='api')return;e.preventDefault();e.stopImmediatePropagation();const f=e.target,val=id=>f.querySelector('#'+id).value;const id=f.id;if(!f.reportValidity())return;
   consoleAction(async()=>{
