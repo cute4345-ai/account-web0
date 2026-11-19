@@ -1,5 +1,5 @@
 // v0.4.1 public endpoints and response adapters. No service secrets.
-window.WalletConsoleConfig={apiBase:'https://out-tutorials-sanyo-attempt.trycloudflare.com/api/v1',adminQueries:{},topupBridge:null};
+window.WalletConsoleConfig={apiBase:'https://fact-attend-temperature-plot.trycloudflare.com/api/v1',adminQueries:{},topupBridge:null};
 (function(c){
  const list=async(request,path,cursor,extra={})=>{const q=new URLSearchParams({limit:'20',...extra});if(cursor)q.set('after',cursor);const r=await request(path+'?'+q,{raw:true});if(!Array.isArray(r.data))throw Error('列表缺少data陣列');return {items:r.data,nextCursor:r.data.length?r.nextAfter||null:null};};
  const all=async(request,path)=>{let rows=[],cursor;for(let i=0;i<500;i++){const r=await list(request,path,cursor);rows.push(...r.items);if(!r.nextCursor)return rows;if(r.nextCursor===cursor)throw Error('後端分頁未前進');cursor=r.nextCursor;}throw Error('資料超出本次搜尋上限，請縮小範圍');};
