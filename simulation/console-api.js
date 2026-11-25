@@ -13,7 +13,7 @@
    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
    try{const r=await this.fetcher(this.base+path,{method,headers,body:body===undefined?undefined:JSON.stringify(body),credentials:'omit',redirect:'error',cache:'no-store',signal:controller.signal});
     if(r.status===204&&r.ok)return null;const json=await r.json();
-    if(!r.ok){if(r.status===401)this.session=null;throw new ApiError(json.error?.message||'後端請求失敗',json.error?.code,r.status);}
+    if(!r.ok){if(r.status===401)this.session=null;const error=new ApiError(json.error?.message||'後端請求失敗',json.error?.code,r.status);error.data=json.data;throw error;}
     if(raw)return json;assert(Object.hasOwn(json,'data'),'API回應缺少data欄位');return json.data;
    }catch(e){if(e instanceof ApiError)throw e;const error=new Error('無法確認後端結果，請重新查詢資料後再操作。');error.uncertain=method!=='GET';throw error;}finally{clearTimeout(timer);}
   }

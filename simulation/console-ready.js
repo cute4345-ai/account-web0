@@ -121,7 +121,7 @@ function consoleReviewDialog(decision){const merchant=consoleDetail?.merchant;if
 // Match semantic actions: browsers normalize whitespace and boolean attributes in innerHTML.
 function consoleReplaceAction(html,action,replacement){return html.replace(new RegExp('<button\\b(?=[^>]*\\bdata-action="'+action+'")[^>]*>[\\s\\S]*?</button>','g'),()=>replacement);}
 function consoleTopupRender(){const f=consoleFlow;
- const viewKey=JSON.stringify([f.stage,consoleBusy,consoleError,!!f.availabilityWait,f.balanceMinor,f.session?.stationName,f.session?.cardNumber,f.pending?.amountMinor,f.saved?.amountMinor,f.state?.amountMinor,f.receipt?.transactionId,f.receipt?.failureCode]);
+ const viewKey=JSON.stringify([f.stage,consoleBusy,consoleError,!!f.availabilityWait,f.balanceMinor,f.session?.stationName,f.session?.cardNumber,f.pending?.amountMinor,f.saved?.amountMinor,f.state?.amountMinor,f.receipt?.transactionId,f.receipt?.failureCode,!!f.saved?.confirmSubmitted]);
  if(viewKey===consoleTopupViewKey)return;
  const stage=({idle:'start',ready:'start',reading:'waiting',card:'amount',confirm:'confirm',cash:'processing',processing:'processing',unknown:'unknown',success:'success',failed:'error',cancelled:'error',expired:'error'})[f.stage];
  tx=stage==='start'?null:{kind:'topup',stage,id:f.receipt?.transactionId||'',amount:Number(f.pending?.amountMinor||f.saved?.amountMinor||f.state?.amountMinor||0)/100,inserted:!['waiting','start'].includes(stage),balanceAfter:f.balanceMinor===null?null:Number(f.balanceMinor)/100,committed:f.stage==='success',error:f.receipt?.failureCode||({failed:'儲值失敗，沒有入帳。',cancelled:'本次操作已取消。',expired:'工作階段已到期。'})[f.stage]||''};
@@ -130,15 +130,16 @@ function consoleTopupRender(){const f=consoleFlow;
  html=consoleReplaceAction(html,'transaction-cancel',consoleButton('取消','cancel'));html=consoleReplaceAction(html,'topup-start',consoleButton('開始儲值','read',true));
  html=html.replace('id="topup-form"','id="console-topup-amount"').replace('id="topup-amount" name="topup-amount"','id="console-amount" name="console-amount"').replace('for="topup-amount"','for="console-amount"').replace('min="1" max="9999999" step="1" inputmode="numeric"','min="0.01" max="10000" step="0.01" inputmode="decimal"').replace('讀卡完成 · 卡號末四碼 4821','讀卡完成 · 卡號 '+esc(f.session?.cardNumber||'—')).replace('請先核對收到的現金。','請輸入金額，後續由機台確認模擬收款。');
  if(['card','confirm'].includes(f.stage))html=html.replace('<h1>輸入儲值金額</h1>','<h1>輸入儲值金額</h1><p>目前餘額：'+consoleMoney(f.balanceMinor)+'</p>'+consoleButton('查看餘額','balance'));
- if(f.stage==='cash')html=html.replace('正在加值，請稍候','等待機台確認模擬收款').replace('請勿取出卡片或重複送出。','請核對讀卡電腦上的金額，確認模擬投入後才會入帳。');
+ if(f.stage==='cash'){html=html.replace('正在加值，請稍候','請清點收到的儲值款項').replace('請勿取出卡片或重複送出。','請核對卡號及上述金額，清點收到的款項後再確認。此按鈕是人工收款聲明。').replace('<span class="spinner" aria-hidden="true"></span>','');html=html.replace('</section></div>', '<p>本次卡號：'+esc(f.session?.cardNumber||'—')+'</p>'+consoleButton('已清點收款，確認儲值','confirm-cash',true,consoleBusy)+'</section></div>');}
+ if(f.stage==='unknown'&&f.saved?.confirmSubmitted)html=html.replace('</section></div>', '<p>已送出收款確認，請先查詢原交易；若需重試，僅重送本次同額確認。</p>'+consoleButton('重送原收款確認','confirm-cash',false,consoleBusy)+'</section></div>');
  html=consoleReplaceAction(html,'device-resolve',consoleButton('查詢原交易結果','retry',true));
  html=consoleReplaceAction(html,'device-remove',consoleButton(f.stage==='success'?'結束交易':'取卡後結束','finish'));
  html=consoleReplaceAction(html,'next-transaction',consoleButton('取卡後繼續交易','next',true)).replace('收到拔卡事件後，才會啟用下一筆。','請先取卡；下一筆仍需重新插卡，不會自動連續加值。');
  if(['failed','cancelled','expired'].includes(f.stage))html=html.replace('<h1>讀卡失敗</h1>','<h1>'+({failed:'儲值未完成',cancelled:'已取消',expired:'工作階段已到期'})[f.stage]+'</h1>');
- html=html.replace('模擬現金儲值 · 無實際金流 · 儲值工作站獨立入口','自助儲值 · 由機台確認模擬收款 · 無實際銀行金流');
+ html=html.replace('模擬現金儲值 · 無實際金流 · 儲值工作站獨立入口','自助儲值 · 網頁人工收款聲明 · 無實際銀行金流');
  if(f.stage==='unknown'&&f.availabilityWait)html=html.replace('正在確認加值結果','等候讀卡工作站上線／空閒');
  app.innerHTML=html;document.querySelector('.station .page').insertAdjacentHTML('beforeend',consoleNotice());consoleTopupViewKey=viewKey;
- if(f.stage==='confirm'&&!dialog.open)openDialog('確認加值',`<p style="text-align:center">本次儲值金額</p><p class="amount">${consoleMoney(f.pending.amountMinor)}</p><p style="text-align:center">請核對金額。後續須由機台確認模擬投入，不會在此直接加值。</p><div class="actions">${consoleButton('返回修改','edit')}${consoleButton('確認送出','submit',true)}</div>`,{dark:true});
+ if(f.stage==='confirm'&&!dialog.open)openDialog('確認加值',`<p style="text-align:center">本次儲值金額</p><p class="amount">${consoleMoney(f.pending.amountMinor)}</p><p style="text-align:center">請核對金額。此步驟先固定金額，不會入帳；下一頁清點收款後再按確認。</p><div class="actions">${consoleButton('返回修改','edit')}${consoleButton('確認送出','submit',true)}</div>`,{dark:true});
 }
 
  const previousConsoleRender=render;
@@ -175,6 +176,7 @@ function consoleTopupRender(){const f=consoleFlow;
    else if(action==='console-poll-replace'){const r=await consoleApi.pollReplacement(consoleTask.requestId);if(r.requestId!==consoleTask.requestId||r.purpose!=='REPLACE')throw Error('回報任務不符');consoleTask={...consoleTask,...r};}
    else if(action==='console-read')await consoleFlow.open();
    else if(action==='console-balance')await consoleFlow.balance();
+   else if(action==='console-confirm-cash')await consoleFlow.confirmCash();
    else if(action==='console-submit'){closeDialog();await consoleFlow.submit();}
    else if(action==='console-retry')await consoleFlow.poll();
    else if(action==='console-retry-amount')await consoleFlow.retryAmount();
