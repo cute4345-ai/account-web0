@@ -102,11 +102,13 @@ consoleAdminContent=function(){
   let html=consoleOriginalVisual.adminPage().replace(note,'').replace('id="admin-search"','id="console-search"').replace('id="admin-query"','id="console-query"');
   let index=0;const stats=['userCount','boundCardCount','pendingMerchantCount'];html=html.replace(/<strong class="stat-value">[^<]*<\/strong>/g,()=>'<strong class="stat-value">'+(Number.isSafeInteger(consoleStats?.[stats[index]])?consoleStats[stats[index++]]:(index++,'—'))+'</strong>');
   html=html.replace(/data-user="([^"]*)" data-action="admin-detail"/g,(_,username)=>{const u=db.users.find(u=>esc(u.username)===username);return `data-id="${esc(u?.id||'')}" data-action="console-detail"`;});
+  if(page==='admin-review'&&rows!==null)html+='<section class="panel"><h2>商家編號查詢</h2><p>merchantId 由後端產生；登記付款工作站時使用此編號，不是使用者序號。</p>'+table(['商家編號 merchantId','商家名稱','申請人序號','狀態'],rows.map(m=>[esc(m.merchantId),esc(m.merchantName),esc(m.ownerUserId),esc(m.status)]),'目前沒有商家資料')+'</section>';
   if(rows===null)html=html.replace('尚無使用者資料','尚未查詢，請按搜尋取得後端資料');if(page==='admin')html+=consoleManagementLinks();return html+(consoleCursor?consoleButton('下一頁','more'):'');
  }
  if(page==='admin-detail'){
   const d=consoleDetail;if(!d)return '<h1>請先從使用者清單選擇帳戶</h1>'+consoleButton('返回清單','back');const u=consoleVisualUser(d);db.users=[u];detailUser=u.username;db.cancellations=[];
   let html=consoleOriginalVisual.adminDetail().replace(note,'').replace('模擬餘額','帳戶餘額').replace('卡號末四碼','卡號').replace('4821',esc(d.card?.cardNumber||'—'));
+  if(d.merchant)html+='<section class="panel"><h2>商家付款設定資料</h2><p>登記付款工作站時，直接複製以下 merchantId，不需查資料庫。</p><label for="console-display-merchant-id">商家編號 merchantId</label><input id="console-display-merchant-id" readonly value="'+esc(d.merchant.merchantId)+'"><p>商家名稱：'+esc(d.merchant.merchantName)+'</p><p>商家狀態：'+esc(d.merchant.status)+'</p><p>8 碼商家代碼：'+esc(d.merchant.merchantCode||'此查詢未提供代碼；首次登記時指定，已設定者沿用原值。')+'</p></section>';
   html=html.replace('尚無註銷紀錄',table(['卡號','狀態','綁定時間','註銷時間'],(d.cards||[]).map(c=>[esc(c.cardNumber),esc(c.status),esc(consoleTime(c.boundAt)),esc(consoleTime(c.revokedAt))]),'沒有歷史卡片'));
   html=html.replace(/<section class="panel"><h2>註銷紀錄<\/h2>[\s\S]*?<\/section>/, '<section class="panel"><h2>卡片歷史／註銷紀錄</h2>'+table(['卡號','狀態','綁定時間','註銷時間'],(d.cards||[]).map(c=>[esc(c.cardNumber),esc(c.status),esc(consoleTime(c.boundAt)),esc(consoleTime(c.revokedAt))]),'沒有歷史卡片')+'</section>');
  html+=`<section class="panel"><h2>帳號狀態</h2><form id="console-user-status"><label for="console-user-state">狀態</label><select id="console-user-state"><option value="DISABLED">停用</option><option value="ACTIVE">恢復</option></select>${field('console-user-note','原因')}<button class="primary">核對後更新帳號</button></form></section>`;
